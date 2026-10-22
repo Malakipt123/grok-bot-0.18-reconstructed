@@ -1,14 +1,9 @@
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
 import readline from "node:readline";
 
-import { runCommand } from "./actions.js";
-import { stripAudioTags, VoiceAssistant } from "./assistant.js";
+import { stripAudioTags } from "./assistant.js";
 import { AudioPlayer, startRecording, type Recording } from "./audio.js";
 import { loadVoiceAssistantConfig, VoiceAssistantConfigError } from "./config.js";
-import { ElevenLabsClient } from "./elevenlabs.js";
-import { GrokClient } from "./grok.js";
-import { DEFAULT_ASSISTANT_PROFILE, parseAssistantProfile } from "./profile.js";
+import { createVoiceAssistantRuntime } from "./runtime.js";
 import { RoutineScheduler } from "./scheduler.js";
 
 const HELP = `Press Enter to start talking and Enter again to stop, or type a message.
@@ -31,37 +26,9 @@ async function main(): Promise<void> {
     return;
   }
 
-  const profileDirectory = path.dirname(config.profilePath);
-  await mkdir(profileDirectory, { recursive: true });
-  const profileMarkdown = await readFile(config.profilePath, "utf8").catch(async () => {
-    await writeFile(config.profilePath, DEFAULT_ASSISTANT_PROFILE);
-    console.log(`Created ${config.profilePath}`);
-    return DEFAULT_ASSISTANT_PROFILE;
-  });
-  const profile = parseAssistantProfile(profileMarkdown);
-
-  const grok = new GrokClient({ apiKey: config.xaiApiKey, baseUrl: config.xaiBaseUrl, model: config.grokModel });
-  const voice = new ElevenLabsClient({
-    apiKey: config.elevenLabsApiKey,
-    baseUrl: config.elevenLabsBaseUrl,
-    voiceId: config.elevenLabsVoiceId,
-    ttsModel: config.elevenLabsTtsModel,
-    sttModel: config.elevenLabsSttModel,
-    language: config.language,
-  });
-  const assistant = new VoiceAssistant({
-    grok,
-    profile,
-    language: config.language,
-    historyLimit: config.historyLimit,
-    actions: {
-      platform: process.platform,
-      run: runCommand,
-      notesPath: path.join(profileDirectory, "notes.md"),
-      now: () => new Date(),
-      locale: config.language,
-    },
-  });
+  const runtime = await createVoiceAssistantRuntime(config);
+  const { assistant, voice, profile } = runtime;
+  if (runtime.createdProfile) console.log(`Created ${config.profilePath}`);
   const player = new AudioPlayer();
   let muted = process.argv.includes("--mute") || !player.available;
   if (!player.available) console.log("No audio player found; replies will be text only.");
@@ -88,9 +55,7 @@ async function main(): Promise<void> {
   };
 
   const runRoutine = async (name: string, logFile: string) => {
-    const report = await assistant.runRoutine(name);
-    await appendFile(path.join(profileDirectory, logFile), `\n## ${new Date().toISOString()} — ${name}\n\n${stripAudioTags(report)}\n`);
-    void speak(report);
+    void speak(await runtime.runRoutine({ name, logFile }));
   };
 
   const scheduler = new RoutineScheduler({

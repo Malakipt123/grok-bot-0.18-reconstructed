@@ -263,3 +263,153 @@ test("audio command selection prefers sox and falls back to ffmpeg", async () =>
     await dispose();
   }
 });
+
+function desktopHarness(overrides = {}) {
+  const events = [];
+  const shortcuts = new Map();
+  let playResolve = null;
+  const deps = {
+    env: { XAI_API_KEY: "x" },
+    readSecret: async (key) => (key === "ELEVENLABS_API_KEY" ? "from-secrets" : null),
+    reportFailure: (leg, error) => events.push(["failure", leg, String(error)]),
+    notify: (title, body) => events.push(["notify", body]),
+    requestMicrophoneAccess: async () => { events.push(["mic"]); return true; },
+    cue: (kind) => events.push(["cue", kind]),
+    shortcut: {
+      register: (accelerator, callback) => { shortcuts.set(accelerator, callback); return true; },
+      unregister: (accelerator) => shortcuts.delete(accelerator),
+    },
+    startRecording: async () => ({ stop: async () => new Uint8Array(16_000) }),
+    player: {
+      play: (audio) => new Promise((resolve) => { events.push(["play", audio.length]); playResolve = resolve; }),
+      stop: () => { events.push(["player-stop"]); playResolve?.(); playResolve = null; },
+    },
+    createRuntime: async (config) => {
+      events.push(["config", config.xaiApiKey, config.elevenLabsApiKey]);
+      return {
+        profile: { persona: "", capabilities: "", routines: [] },
+        voice: { transcribe: async () => "que horas são?", synthesize: async (text) => new Uint8Array(text.length) },
+        assistant: { handle: async (text) => ({ text: `[laughs] ${text} 09:30`, source: "local" }) },
+        runRoutine: async () => "",
+      };
+    },
+    ...overrides,
+  };
+  return { deps, events, shortcuts, finishPlayback: () => { playResolve?.(); playResolve = null; } };
+}
+
+test("desktop voice assistant toggles listening on the global shortcut and speaks the reply", async () => {
+  const { module, dispose } = await loadModule("desktop-controller.ts");
+  try {
+    const harness = desktopHarness();
+    const result = await module.startDesktopVoiceAssistant(harness.deps);
+    assert.equal(result.status, "started");
+    assert.equal(result.assistant.accelerator, "Alt+Space");
+    assert.ok(harness.shortcuts.has("Alt+Space"));
+    assert.deepEqual(harness.events[0], ["config", "x", "from-secrets"]);
+
+    await result.assistant.toggle();
+    assert.equal(result.assistant.state, "listening");
+    const finished = result.assistant.toggle();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(result.assistant.state, "speaking");
+    harness.finishPlayback();
+    await finished;
+    assert.equal(result.assistant.state, "idle");
+    assert.ok(harness.events.some((event) => event[0] === "notify" && event[1] === "que horas são? 09:30"));
+    assert.deepEqual(harness.events.filter((event) => event[0] === "cue").map((event) => event[1]), ["start", "stop"]);
+    assert.equal(harness.events.filter((event) => event[0] === "mic").length, 1);
+
+    result.assistant.dispose();
+    assert.equal(harness.shortcuts.size, 0);
+  } finally {
+    await dispose();
+  }
+});
+
+test("pressing the shortcut while Jarvis speaks interrupts playback and listens again", async () => {
+  const { module, dispose } = await loadModule("desktop-controller.ts");
+  try {
+    const harness = desktopHarness();
+    const { assistant } = await module.startDesktopVoiceAssistant(harness.deps);
+    await assistant.toggle();
+    const firstTurn = assistant.toggle();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(assistant.state, "speaking");
+    await assistant.toggle();
+    await firstTurn;
+    assert.equal(assistant.state, "listening");
+    assert.ok(harness.events.some((event) => event[0] === "player-stop"));
+    assistant.dispose();
+  } finally {
+    await dispose();
+  }
+});
+
+test("desktop voice assistant stays off without keys, when disabled, or when the shortcut is taken", async () => {
+  const { module, dispose } = await loadModule("desktop-controller.ts");
+  try {
+    const noKeys = desktopHarness({ env: {}, readSecret: async () => null });
+    assert.equal((await module.startDesktopVoiceAssistant(noKeys.deps)).status, "missing-keys");
+    assert.equal(noKeys.shortcuts.size, 0);
+
+    const disabled = desktopHarness({ env: { JARVIS_SHORTCUT: "off", XAI_API_KEY: "x", ELEVENLABS_API_KEY: "e" } });
+    assert.equal((await module.startDesktopVoiceAssistant(disabled.deps)).status, "disabled");
+
+    const taken = desktopHarness();
+    taken.deps.shortcut.register = () => false;
+    assert.equal((await module.startDesktopVoiceAssistant(taken.deps)).status, "shortcut-unavailable");
+
+    const silent = desktopHarness({ startRecording: async () => ({ stop: async () => new Uint8Array(100) }) });
+    const { assistant } = await module.startDesktopVoiceAssistant(silent.deps);
+    await assistant.toggle();
+    await assistant.toggle();
+    assert.equal(assistant.state, "idle");
+    assert.ok(!silent.events.some((event) => event[0] === "play"));
+    assistant.dispose();
+
+    const denied = desktopHarness({ requestMicrophoneAccess: async () => false });
+    const deniedStart = await module.startDesktopVoiceAssistant(denied.deps);
+    await deniedStart.assistant.toggle();
+    assert.equal(deniedStart.assistant.state, "idle");
+    assert.match(denied.events.find((event) => event[0] === "notify")[1], /Microphone access/);
+    deniedStart.assistant.dispose();
+  } finally {
+    await dispose();
+  }
+});
+
+test("Electron adapter maps globalShortcut, notifications and macOS microphone access", async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "grok-voice-electron-"));
+  try {
+    const output = path.join(temporary, "adapter.mjs");
+    await build({
+      entryPoints: [path.join(repoRoot, "source/electron-main/voice-assistant/electron-voice-assistant.ts")],
+      outfile: output, bundle: true, format: "esm", platform: "node", target: "node22",
+    });
+    const adapter = await import(pathToFileURL(output).href);
+    const calls = [];
+    class FakeNotification {
+      constructor(options) { this.options = options; }
+      static isSupported() { return true; }
+      show() { calls.push(["notification", this.options.title, this.options.body, this.options.silent]); }
+    }
+    const electron = {
+      globalShortcut: { register: (accelerator) => { calls.push(["register", accelerator]); return true; }, unregister: (accelerator) => calls.push(["unregister", accelerator]) },
+      Notification: FakeNotification,
+      systemPreferences: { getMediaAccessStatus: () => "not-determined", askForMediaAccess: async () => { calls.push(["ask"]); return true; } },
+    };
+    const bindings = { readSecret: async () => null, reportFailure: () => {}, env: {}, platform: "darwin" };
+    const deps = adapter.createElectronVoiceAssistantDeps(bindings, electron);
+    assert.equal(deps.shortcut.register("Alt+Space", () => {}), true);
+    deps.shortcut.unregister("Alt+Space");
+    deps.notify("Jarvis", "Olá");
+    assert.equal(await deps.requestMicrophoneAccess(), true);
+    assert.deepEqual(calls, [["register", "Alt+Space"], ["unregister", "Alt+Space"], ["notification", "Jarvis", "Olá", true], ["ask"]]);
+    const linux = adapter.createElectronVoiceAssistantDeps({ ...bindings, platform: "linux" }, electron);
+    assert.equal(await linux.requestMicrophoneAccess(), true);
+    assert.equal(calls.length, 4);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});

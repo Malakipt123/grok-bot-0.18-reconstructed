@@ -1,7 +1,10 @@
 # Jarvis voice assistant (Grok + ElevenLabs)
 
-A standalone push-to-talk voice assistant that lives beside the reconstructed
-app. It does not touch the Electron runtime or the packaged renderer.
+A push-to-talk voice assistant with two front ends that share the same core:
+
+- **Desktop:** a global **Option+Space** shortcut in the reconstructed app,
+  which works even when the app is in the background.
+- **Terminal:** `npm run voice`.
 
 ```text
 microphone ──sox/ffmpeg──▶ ElevenLabs Scribe (speech-to-text)
@@ -35,7 +38,40 @@ microphone ──sox/ffmpeg──▶ ElevenLabs Scribe (speech-to-text)
   routines. The output of each routine is spoken aloud and appended to a log
   file next to the profile.
 
-## Setup
+## Desktop (Option+Space)
+
+1. Provide `XAI_API_KEY` and `ELEVENLABS_API_KEY` in one of two ways:
+   - save them in the app's encrypted secrets store, the same one that holds
+     box secrets and `OPENROUTER_API_KEY`; or
+   - export them and launch the app from that terminal
+     (`open "dist/Grok Bot 0.18 Reconstructed.app"`). An app launched from
+     Finder does not see your shell's environment variables.
+2. Install a recorder: `brew install sox` (or ffmpeg).
+3. Restart the app. The assistant only starts when both keys are present.
+
+Then:
+
+- Press **Option+Space** to start listening (you hear a *Tink*). Press it again
+  to send (*Pop*). Recording stops on its own after 30 seconds.
+- The reply appears as a notification and is spoken by ElevenLabs.
+- Pressing Option+Space while Jarvis is talking interrupts it and starts
+  listening again.
+- Routines from `ASSISTANT.md` run in the background and are spoken when the
+  assistant is idle.
+- The first time, macOS asks for microphone permission. The packaged app
+  declares `NSMicrophoneUsageDescription` for this.
+
+`JARVIS_SHORTCUT` changes the shortcut (any Electron accelerator, e.g.
+`CommandOrControl+Shift+J`); `JARVIS_SHORTCUT=off` turns it off. Electron's
+`globalShortcut` only reports key presses, never key releases, and needs a
+non-modifier key. That is why the shortcut is Option+Space toggle-to-talk
+rather than holding the right Option key on its own.
+
+Source: `desktop-controller.ts` (state machine: idle → listening → thinking →
+speaking) and `source/electron-main/voice-assistant/electron-voice-assistant.ts`
+(Electron adapter, started from `main-production-services.ts`).
+
+## Terminal setup
 
 ```sh
 export XAI_API_KEY=...            # https://console.x.ai

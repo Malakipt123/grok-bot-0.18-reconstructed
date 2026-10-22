@@ -12,8 +12,17 @@ export interface AudioCommand {
   readonly args: readonly string[];
 }
 
+// Apps launched from Finder inherit a minimal PATH without Homebrew.
+const EXTRA_TOOL_DIRS = ["/opt/homebrew/bin", "/usr/local/bin"];
+
+export function toolEnv(env: NodeJS.ProcessEnv = process.env, platform = process.platform): NodeJS.ProcessEnv {
+  if (platform === "win32") return env;
+  const entries = (env.PATH ?? "").split(path.delimiter).filter(Boolean);
+  return { ...env, PATH: [...entries, ...EXTRA_TOOL_DIRS.filter((dir) => !entries.includes(dir))].join(path.delimiter) };
+}
+
 export function hasCommand(file: string): boolean {
-  const probe = process.platform === "win32" ? spawnSync("where", [file]) : spawnSync("sh", ["-c", 'command -v "$1"', "sh", file]);
+  const probe = process.platform === "win32" ? spawnSync("where", [file]) : spawnSync("sh", ["-c", 'command -v "$1"', "sh", file], { env: toolEnv() });
   return probe.status === 0;
 }
 
@@ -47,8 +56,11 @@ export async function startRecording(): Promise<Recording> {
     await rm(directory, { recursive: true, force: true });
     throw new Error("No recorder found. Install sox (brew install sox) or ffmpeg.");
   }
-  const child = spawn(command.file, [...command.args], { stdio: ["pipe", "ignore", "inherit"] });
-  const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+  const child = spawn(command.file, [...command.args], { stdio: ["pipe", "ignore", "ignore"], env: toolEnv() });
+  const exited = new Promise<void>((resolve) => {
+    child.once("exit", () => resolve());
+    child.once("error", () => resolve());
+  });
   return {
     async stop() {
       // ffmpeg finalises the WAV header on "q"; sox on SIGINT.
@@ -79,7 +91,7 @@ export class AudioPlayer {
       await writeFile(file, mp3);
       const command = playerCommand(file);
       if (!command) throw new Error("No audio player found. Install ffmpeg (ffplay) or mpg123.");
-      const child = spawn(command.file, [...command.args], { stdio: "ignore" });
+      const child = spawn(command.file, [...command.args], { stdio: "ignore", env: toolEnv() });
       this.#current = child;
       await new Promise<void>((resolve, reject) => {
         child.once("error", reject);

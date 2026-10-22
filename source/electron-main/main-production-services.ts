@@ -60,6 +60,7 @@ import type {
   MainBrowserWindowOptions,
   MainEdge,
 } from "./main.js";
+import { startElectronVoiceAssistant } from "./voice-assistant/electron-voice-assistant.js";
 
 export interface ElectronPackageMetadata {
   readonly version: string;
@@ -828,6 +829,12 @@ export function createElectronMainProductionComposition(bindings: ElectronMainPr
         env,
       });
       track(requireDisposable(bindings.services.registerIpc(context), "ipc"));
+      track(startElectronVoiceAssistant({
+        readSecret: (key) => requireValue(secretsStores, "secrets-stores").userSecretsStore.reveal(key),
+        reportFailure: (leg, error) => bindings.reportFailure("voice-assistant", leg, error),
+        env,
+        platform,
+      }));
       registerDevWiring({
         ipcMain: bindings.native.ipcMain,
         isPackaged: bindings.native.app.isPackaged,
