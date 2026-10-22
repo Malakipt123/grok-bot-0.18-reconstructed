@@ -98,6 +98,16 @@ tool execution across routed conversations.
 providers that return usage data. These figures are activity records, not an
 authoritative provider invoice.
 
+### Jarvis voice assistant
+
+`npm run voice` starts a standalone push-to-talk assistant. It uses ElevenLabs
+Scribe for speech-to-text, Grok (xAI) for reasoning and tool calls, and
+ElevenLabs `eleven_v3` for speech. Simple commands such as opening apps,
+setting the volume, telling the time or taking notes run locally without an
+LLM call. An `ASSISTANT.md` profile defines the persona and daily routines.
+It needs `XAI_API_KEY` and `ELEVENLABS_API_KEY`; see
+[source/voice-assistant/README.md](source/voice-assistant/README.md).
+
 ### Local Docker sandbox
 
 The Router page also has a **Use local Docker VM** toggle. When enabled, Grok
@@ -207,6 +217,7 @@ npm run package           # build, sign, and verify the macOS app
 npm run verify            # verify an existing packaged app
 npm run smoke             # bounded native smoke check
 npm run publication:check # prove a fresh-history export is lossless
+npm run voice             # Grok + ElevenLabs voice assistant (needs API keys)
 ```
 
 Generated directories including `.cache`, `.build`, `dist`, `src/app/dist`,
