@@ -7,7 +7,8 @@ import { RoutineScheduler } from "./scheduler.js";
 import { AudioTagFilter, SpeechPipeline } from "./speech-pipeline.js";
 
 const HELP = `Press Enter to start talking and Enter again to stop, or type a message.
-Commands: /mute  /routines  /run <routine>  /memory  /forget <id|all>  /help  /quit`;
+Commands: /mute  /routines  /run <routine>  /memory  /forget <id|all>
+          /google connect|status|disconnect  /help  /quit`;
 
 async function main(): Promise<void> {
   const config = (() => {
@@ -26,7 +27,10 @@ async function main(): Promise<void> {
     return;
   }
 
-  const runtime = await createVoiceAssistantRuntime(config, { onMemoryError: (error) => console.error(`Memory: ${errorMessage(error)}`) });
+  const runtime = await createVoiceAssistantRuntime(config, {
+    onMemoryError: (error) => console.error(`Memory: ${errorMessage(error)}`),
+    onNotice: (message) => console.log(`\n${message}`),
+  });
   const { assistant, voice, profile } = runtime;
   if (runtime.createdProfile) console.log(`Created ${config.profilePath}`);
   const memory = runtime.memory;
@@ -153,6 +157,22 @@ async function main(): Promise<void> {
       } else {
         const removed = await memory.forget(target);
         console.log(removed ? `Forgot: ${removed.text}` : `No memory ${target}. Use /memory to list ids.`);
+      }
+    } else if (text.startsWith("/google")) {
+      const google = runtime.google;
+      const command = text.slice(7).trim() || "status";
+      if (!google) console.log("Google Calendar is not configured. Set GOOGLE_CLIENT_ID (and GOOGLE_CLIENT_SECRET) from a Desktop OAuth client.");
+      else if (command === "connect") {
+        console.log("Opening your browser for Google sign-in…");
+        await google.connect().then(
+          () => console.log("Google Calendar connected."),
+          (error) => console.error(`Google sign-in failed: ${errorMessage(error)}`),
+        );
+      } else if (command === "disconnect") {
+        await google.disconnect();
+        console.log("Google Calendar disconnected and access revoked.");
+      } else {
+        console.log((await google.isConnected()) ? "Google Calendar: connected." : "Google Calendar: not connected. Use /google connect.");
       }
     } else if (text.startsWith("/run ")) {
       const name = text.slice(5).trim();

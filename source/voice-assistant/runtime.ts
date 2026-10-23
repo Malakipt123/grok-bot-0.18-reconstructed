@@ -6,6 +6,8 @@ import { stripAudioTags, VoiceAssistant } from "./assistant.js";
 import type { VoiceAssistantConfig } from "./config.js";
 import { ElevenLabsClient } from "./elevenlabs.js";
 import { GrokClient } from "./grok.js";
+import { createCalendarToolkit, GoogleCalendarClient } from "./calendar.js";
+import { GOOGLE_TOKEN_FILENAME, GoogleOAuth } from "./google-auth.js";
 import { MEMORY_FILENAME, MemoryStore } from "./memory.js";
 import { DEFAULT_ASSISTANT_PROFILE, parseAssistantProfile, type AssistantProfile, type AssistantRoutine } from "./profile.js";
 
@@ -18,13 +20,22 @@ export interface VoiceAssistantRuntime {
   readonly createdProfile: boolean;
   /** Null when JARVIS_MEMORY=off. */
   readonly memory: MemoryStore | null;
+  /** Null when GOOGLE_CLIENT_ID is not configured. */
+  readonly google: GoogleOAuth | null;
   /** Runs a routine, appends its report to the routine's log file, and returns the report. */
   runRoutine(routine: Pick<AssistantRoutine, "name" | "logFile">): Promise<string>;
 }
 
 export async function createVoiceAssistantRuntime(
   config: VoiceAssistantConfig,
-  options: { readonly platform?: NodeJS.Platform; readonly run?: CommandRunner; readonly onMemoryError?: (error: unknown) => void } = {},
+  options: {
+    readonly platform?: NodeJS.Platform;
+    readonly run?: CommandRunner;
+    readonly onMemoryError?: (error: unknown) => void;
+    /** Short status messages for the user (e.g. "Google Calendar connected"). */
+    readonly onNotice?: (message: string) => void;
+    readonly fetch?: typeof fetch;
+  } = {},
 ): Promise<VoiceAssistantRuntime> {
   const profileDirectory = path.dirname(config.profilePath);
   await mkdir(profileDirectory, { recursive: true });
@@ -42,6 +53,43 @@ export async function createVoiceAssistantRuntime(
     })
     : null;
 
+  const platform = options.platform ?? process.platform;
+  const run = options.run ?? runCommand;
+  const portuguese = config.language.toLowerCase().startsWith("pt");
+  const google = config.googleClientId
+    ? new GoogleOAuth({
+      clientId: config.googleClientId,
+      ...(config.googleClientSecret ? { clientSecret: config.googleClientSecret } : {}),
+      tokenPath: path.join(profileDirectory, GOOGLE_TOKEN_FILENAME),
+      ...(options.fetch ? { fetch: options.fetch } : {}),
+      openUrl: async (url) => {
+        if (!url.startsWith("https://accounts.google.com/")) throw new Error("Refusing to open an unexpected sign-in URL");
+        if (platform === "darwin") await run("open", [url]);
+        else if (platform === "win32") await run("explorer", [url]);
+        else await run("xdg-open", [url]);
+      },
+    })
+    : null;
+  const toolkits = google
+    ? [createCalendarToolkit({
+      auth: google,
+      timeZone: config.timeZone,
+      calendar: new GoogleCalendarClient({ auth: google, timeZone: config.timeZone, locale: config.language, ...(options.fetch ? { fetch: options.fetch } : {}) }),
+    })]
+    : [];
+  const connectCalendar = () => {
+    if (!google) {
+      return portuguese
+        ? "O Google Calendar ainda não está configurado. Falta definir GOOGLE_CLIENT_ID."
+        : "Google Calendar is not set up yet: GOOGLE_CLIENT_ID is missing.";
+    }
+    google.connect().then(
+      () => options.onNotice?.(portuguese ? "Google Calendar ligado." : "Google Calendar connected."),
+      (error: unknown) => options.onNotice?.(`${portuguese ? "Não foi possível ligar o Google Calendar" : "Could not connect Google Calendar"}: ${error instanceof Error ? error.message : String(error)}`),
+    );
+    return portuguese ? "Abri o browser para ligares o teu Google Calendar." : "I've opened your browser so you can connect Google Calendar.";
+  };
+
   const voice = new ElevenLabsClient({
     apiKey: config.elevenLabsApiKey,
     baseUrl: config.elevenLabsBaseUrl,
@@ -58,12 +106,14 @@ export async function createVoiceAssistantRuntime(
     ...(memory ? {
       memory,
       initialHistory: memory.restoreConversation(config.conversationTtlHours * 3_600_000),
-      rememberedReply: config.language.toLowerCase().startsWith("pt") ? "Fica registado." : "Noted, I'll remember that.",
+      rememberedReply: portuguese ? "Fica registado." : "Noted, I'll remember that.",
     } : {}),
     ...(options.onMemoryError ? { onMemoryError: options.onMemoryError } : {}),
+    toolkits,
+    connectCalendar,
     actions: {
-      platform: options.platform ?? process.platform,
-      run: options.run ?? runCommand,
+      platform,
+      run,
       notesPath: path.join(profileDirectory, "notes.md"),
       now: () => new Date(),
       locale: config.language,
@@ -77,6 +127,7 @@ export async function createVoiceAssistantRuntime(
     profileDirectory,
     createdProfile,
     memory,
+    google,
     async runRoutine(routine) {
       const report = await assistant.runRoutine(routine.name);
       await appendFile(path.join(profileDirectory, routine.logFile), `\n## ${new Date().toISOString()} — ${routine.name}\n\n${stripAudioTags(report)}\n`);

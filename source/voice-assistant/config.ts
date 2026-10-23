@@ -17,6 +17,11 @@ export interface VoiceAssistantConfig {
   readonly memoryEnabled: boolean;
   /** A saved conversation older than this starts fresh on restart (facts are always kept). */
   readonly conversationTtlHours: number;
+  /** OAuth client of type "Desktop app"; Google Calendar is offered only when set. */
+  readonly googleClientId: string | null;
+  readonly googleClientSecret: string | null;
+  /** IANA zone for calendar times; defaults to the system zone. */
+  readonly timeZone: string;
 }
 
 export class VoiceAssistantConfigError extends Error {
@@ -51,7 +56,20 @@ export function loadVoiceAssistantConfig(env: NodeJS.ProcessEnv = process.env): 
     historyLimit: Number.isFinite(historyLimit) && historyLimit > 0 ? historyLimit : 20,
     memoryEnabled: env.JARVIS_MEMORY?.trim().toLowerCase() !== "off",
     conversationTtlHours: Number.isFinite(conversationTtlHours) && conversationTtlHours >= 0 ? conversationTtlHours : 12,
+    googleClientId: env.GOOGLE_CLIENT_ID?.trim() || null,
+    googleClientSecret: env.GOOGLE_CLIENT_SECRET?.trim() || null,
+    timeZone: validTimeZone(env.JARVIS_TIMEZONE?.trim()) ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
   };
+}
+
+function validTimeZone(zone: string | undefined): string | null {
+  if (!zone) return null;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: zone });
+    return zone;
+  } catch {
+    return null;
+  }
 }
 
 function trimSlash(value: string): string {

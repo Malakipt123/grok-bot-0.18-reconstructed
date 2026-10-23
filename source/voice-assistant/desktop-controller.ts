@@ -14,6 +14,8 @@ import { RoutineScheduler } from "./scheduler.js";
 
 export const DEFAULT_VOICE_SHORTCUT = "Alt+Space";
 export const VOICE_SECRET_KEYS = ["XAI_API_KEY", "ELEVENLABS_API_KEY"] as const;
+/** Read from the app's secrets too, but not required to start. */
+export const OPTIONAL_VOICE_SECRET_KEYS = ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"] as const;
 const MIN_SPEECH_BYTES = 8_000; // ~0.25 s of 16 kHz mono PCM
 
 export type DesktopVoiceState = "idle" | "listening" | "thinking" | "speaking";
@@ -74,7 +76,7 @@ export type DesktopVoiceStartResult =
 /** Resolves API keys from the environment first, then the app's encrypted secrets. */
 export async function resolveVoiceEnv(env: NodeJS.ProcessEnv, readSecret: (key: string) => Promise<string | null>): Promise<NodeJS.ProcessEnv> {
   const resolved: NodeJS.ProcessEnv = { ...env };
-  for (const key of VOICE_SECRET_KEYS) {
+  for (const key of [...VOICE_SECRET_KEYS, ...OPTIONAL_VOICE_SECRET_KEYS]) {
     if (resolved[key]?.trim()) continue;
     const secret = await readSecret(key).catch(() => null);
     if (secret?.trim()) resolved[key] = secret.trim();
@@ -92,7 +94,10 @@ export async function startDesktopVoiceAssistant(deps: DesktopVoiceDeps): Promis
   if (missing.length > 0) return { status: "missing-keys", detail: `Add ${missing.join(" and ")} as secrets to enable the voice assistant.` };
 
   const createRuntime = deps.createRuntime
-    ?? ((config: VoiceAssistantConfig) => createVoiceAssistantRuntime(config, { onMemoryError: (error) => deps.reportFailure("memory", error) }));
+    ?? ((config: VoiceAssistantConfig) => createVoiceAssistantRuntime(config, {
+      onMemoryError: (error) => deps.reportFailure("memory", error),
+      onNotice: (message) => deps.notify("Jarvis", message),
+    }));
   const runtime = await createRuntime(loadVoiceAssistantConfig(voiceEnv));
   const record = deps.startRecording ?? startSystemRecording;
   const player = deps.player ?? new AudioPlayer();

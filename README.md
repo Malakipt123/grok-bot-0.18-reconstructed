@@ -109,7 +109,8 @@ ElevenLabs `eleven_v3` for speech. Simple commands such as opening apps,
 setting the volume, telling the time or taking notes run locally without an
 LLM call. An `ASSISTANT.md` profile defines the persona and daily routines,
 and a local `memory.json` keeps facts about you and the recent conversation
-across restarts.
+across restarts. With your own Google OAuth client it can also read and create
+Google Calendar events.
 It needs `XAI_API_KEY` and `ELEVENLABS_API_KEY` (as app secrets or environment
 variables) and sox or ffmpeg; see
 [source/voice-assistant/README.md](source/voice-assistant/README.md).

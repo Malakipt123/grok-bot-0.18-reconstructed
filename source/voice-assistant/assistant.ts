@@ -1,6 +1,7 @@
 import { ACTION_TOOLS, executeAction, isActionName, type ActionContext } from "./actions.js";
 import type { GrokClient, GrokMessage } from "./grok.js";
 import { routeIntent } from "./intent-router.js";
+import type { AssistantToolkit } from "./calendar.js";
 import { isMemoryToolName, MEMORY_TOOLS, type MemoryStore } from "./memory.js";
 import type { AssistantProfile } from "./profile.js";
 
@@ -31,6 +32,10 @@ export interface VoiceAssistantOptions {
   readonly onMemoryError?: (error: unknown) => void;
   /** Spoken confirmation for "remember that …" handled locally, in the reply language. */
   readonly rememberedReply?: string;
+  /** Extra tool sets, e.g. Google Calendar. */
+  readonly toolkits?: readonly AssistantToolkit[];
+  /** Starts the Google sign-in for "connect my calendar"; returns what Jarvis says meanwhile. */
+  readonly connectCalendar?: () => string;
 }
 
 export class VoiceAssistant {
@@ -49,6 +54,11 @@ export class VoiceAssistant {
   async handle(transcript: string, options: HandleOptions = {}): Promise<AssistantReply> {
     const intent = routeIntent(transcript);
     if (intent.kind === "stop") return { text: "", source: "stop" };
+    if (intent.kind === "connect-calendar" && this.#options.connectCalendar) {
+      const text = this.#options.connectCalendar();
+      options.onText?.(text);
+      return { text, source: "local" };
+    }
     if (intent.kind === "remember" && this.#options.memory) {
       try {
         await this.#options.memory.remember(intent.fact);
@@ -82,7 +92,13 @@ export class VoiceAssistant {
   }
 
   async #runToolLoop(conversation: GrokMessage[], options: HandleOptions): Promise<string> {
-    const messages: GrokMessage[] = [{ role: "system", content: this.#systemPrompt() }, ...conversation];
+    const toolkits = this.#options.toolkits ?? [];
+    const [toolkitTools, toolkitPrompts] = await Promise.all([
+      Promise.all(toolkits.map((toolkit) => toolkit.tools())),
+      Promise.all(toolkits.map((toolkit) => toolkit.prompt())),
+    ]);
+    const availableTools = [...ACTION_TOOLS, ...(this.#options.memory ? MEMORY_TOOLS : []), ...toolkitTools.flat()];
+    const messages: GrokMessage[] = [{ role: "system", content: this.#systemPrompt(toolkitPrompts) }, ...conversation];
     const rounds = this.#options.maxToolRounds ?? 4;
     const { grok } = this.#options;
     // Text spoken before a tool call ("Opening it now…") stays part of the reply.
@@ -92,7 +108,7 @@ export class VoiceAssistant {
       options.onText?.(delta);
     };
     for (let round = 0; round <= rounds; round += 1) {
-      const tools = round < rounds ? (this.#options.memory ? [...ACTION_TOOLS, ...MEMORY_TOOLS] : ACTION_TOOLS) : [];
+      const tools = round < rounds ? availableTools : [];
       const streaming = Boolean(grok.stream && options.onText);
       const completion = streaming
         ? await grok.stream!(messages, tools, { onText, ...(options.signal ? { signal: options.signal } : {}) })
@@ -109,9 +125,11 @@ export class VoiceAssistant {
 
   async #runToolCall(name: string, rawArguments: string): Promise<string> {
     const memory = this.#options.memory;
-    if (!isActionName(name) && !(memory && isMemoryToolName(name))) return `Error: unknown tool ${name}`;
+    const toolkit = this.#options.toolkits?.find((candidate) => candidate.handles(name));
+    if (!isActionName(name) && !(memory && isMemoryToolName(name)) && !toolkit) return `Error: unknown tool ${name}`;
     try {
       const args = rawArguments ? (JSON.parse(rawArguments) as Record<string, unknown>) : {};
+      if (toolkit) return await toolkit.run(name, args);
       if (memory && name === "remember") {
         const { fact, created } = await memory.remember(String(args.fact ?? ""));
         return created ? `Saved as [${fact.id}].` : `Already known as [${fact.id}].`;
@@ -139,7 +157,7 @@ export class VoiceAssistant {
     ].join("\n");
   }
 
-  #systemPrompt(): string {
+  #systemPrompt(toolkitPrompts: readonly string[] = []): string {
     const { persona, capabilities } = this.#options.profile;
     return [
       persona || "You are Jarvis, a helpful voice assistant.",
@@ -149,6 +167,7 @@ export class VoiceAssistant {
       "You may add sparse emotion tags in square brackets such as [laughs] or [sighs]; they are performed, not spoken.",
       "Use the provided tools for actions on the computer instead of describing how to do them.",
       this.#memoryPrompt(),
+      ...toolkitPrompts,
       `Current local time: ${this.#options.actions.now().toString()}.`,
     ].filter(Boolean).join("\n");
   }

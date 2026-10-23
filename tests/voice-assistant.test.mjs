@@ -1038,3 +1038,203 @@ test("assistant uses memory across a restart: prompt facts, remember/forget tool
     await memoryModule.dispose();
   }
 });
+
+test("Google OAuth runs a PKCE loopback sign-in, stores only the refresh token privately, and refreshes", async () => {
+  const { module, temporary, dispose } = await loadModule("google-auth.ts");
+  try {
+    const { createHash } = await import("node:crypto");
+    const { stat, readFile } = await import("node:fs/promises");
+    let clock = 1_000_000;
+    const tokenRequests = [];
+    const revoked = [];
+    let refreshStatus = 200;
+    const fakeFetch = async (url, init) => {
+      if (url.startsWith("https://oauth2.googleapis.com/revoke")) { revoked.push(url); return new Response("", { status: 200 }); }
+      const form = new URLSearchParams(init.body);
+      tokenRequests.push(Object.fromEntries(form));
+      if (form.get("grant_type") === "authorization_code") return Response.json({ access_token: "at-1", refresh_token: "rt-1", expires_in: 3600, scope: module.GOOGLE_CALENDAR_SCOPE });
+      if (refreshStatus !== 200) return Response.json({ error: "invalid_grant" }, { status: refreshStatus });
+      return Response.json({ access_token: "at-2", expires_in: 3600 });
+    };
+    let authUrl;
+    const tokenPath = path.join(temporary, "google-token.json");
+    const auth = new module.GoogleOAuth({
+      clientId: "client.apps.googleusercontent.com", clientSecret: "desktop-secret", tokenPath, fetch: fakeFetch, now: () => clock,
+      openUrl: async (url) => {
+        authUrl = new URL(url);
+        // Simulate the browser following Google's redirect back to the loopback server.
+        setTimeout(() => void fetch(`${authUrl.searchParams.get("redirect_uri")}/?code=the-code&state=${authUrl.searchParams.get("state")}`), 5);
+      },
+    });
+    assert.equal(await auth.isConnected(), false);
+    await assert.rejects(auth.accessToken(), (error) => error.name === "GoogleNotConnectedError");
+
+    await auth.connect();
+    assert.equal(authUrl.origin + authUrl.pathname, "https://accounts.google.com/o/oauth2/v2/auth");
+    assert.equal(authUrl.searchParams.get("scope"), module.GOOGLE_CALENDAR_SCOPE);
+    assert.equal(authUrl.searchParams.get("code_challenge_method"), "S256");
+    assert.equal(authUrl.searchParams.get("access_type"), "offline");
+    assert.match(authUrl.searchParams.get("redirect_uri"), /^http:\/\/127\.0\.0\.1:\d+$/);
+    const exchange = tokenRequests[0];
+    assert.equal(exchange.code, "the-code");
+    assert.equal(exchange.client_secret, "desktop-secret");
+    assert.equal(exchange.redirect_uri, authUrl.searchParams.get("redirect_uri"));
+    const challenge = createHash("sha256").update(exchange.code_verifier).digest("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    assert.equal(challenge, authUrl.searchParams.get("code_challenge"), "the verifier matches the PKCE challenge");
+
+    assert.equal((await stat(tokenPath)).mode & 0o777, 0o600);
+    const stored = JSON.parse(await readFile(tokenPath, "utf8"));
+    assert.deepEqual(Object.keys(stored).sort(), ["refreshToken", "schemaVersion", "scope"], "no access token on disk");
+    assert.equal(await auth.accessToken(), "at-1", "the exchanged access token is reused");
+    clock += 3_600_000;
+    assert.equal(await auth.accessToken(), "at-2", "an expired access token is refreshed");
+    assert.equal(tokenRequests.at(-1).grant_type, "refresh_token");
+
+    const restarted = new module.GoogleOAuth({ clientId: "c", tokenPath, fetch: fakeFetch, now: () => clock, openUrl: async () => {} });
+    assert.equal(await restarted.isConnected(), true, "the connection survives a restart");
+    refreshStatus = 400;
+    await assert.rejects(restarted.accessToken(), (error) => error.name === "GoogleNotConnectedError");
+    assert.equal(await restarted.isConnected(), false, "revoked consent forgets the token");
+    await assert.rejects(stat(tokenPath), { code: "ENOENT" });
+    assert.ok(revoked.length >= 1);
+  } finally {
+    await dispose();
+  }
+});
+
+test("Google OAuth rejects a redirect with the wrong state", async () => {
+  const { module, temporary, dispose } = await loadModule("google-auth.ts");
+  try {
+    const auth = new module.GoogleOAuth({
+      clientId: "c", tokenPath: path.join(temporary, "t.json"), fetch: async () => { throw new Error("must not exchange"); },
+      openUrl: async (url) => {
+        const redirect = new URL(url).searchParams.get("redirect_uri");
+        setTimeout(() => void fetch(`${redirect}/?code=x&state=forged`), 5);
+      },
+    });
+    await assert.rejects(auth.connect(), /state mismatch/);
+    assert.equal(await auth.isConnected(), false);
+  } finally {
+    await dispose();
+  }
+});
+
+test("calendar times: local, zoned and all-day values, default ends, DST-aware zones", async () => {
+  const { module, dispose } = await loadModule("calendar.ts");
+  try {
+    assert.deepEqual(module.toEventTime("2026-10-23T15:00", "Europe/Lisbon"), { dateTime: "2026-10-23T15:00:00", timeZone: "Europe/Lisbon" });
+    assert.deepEqual(module.toEventTime("2026-10-23T15:00:00+01:00", "Europe/Lisbon"), { dateTime: "2026-10-23T15:00:00+01:00" });
+    assert.deepEqual(module.toEventTime("2026-10-23", "Europe/Lisbon"), { date: "2026-10-23" });
+    assert.throws(() => module.toEventTime("amanhã às 3", "Europe/Lisbon"), /ISO 8601/);
+    assert.deepEqual(module.defaultEnd({ dateTime: "2026-10-23T23:30:00", timeZone: "Europe/Lisbon" }), { dateTime: "2026-10-24T00:30:00", timeZone: "Europe/Lisbon" });
+    assert.deepEqual(module.defaultEnd({ date: "2026-12-31" }), { date: "2027-01-01" });
+    assert.equal(module.defaultEnd({ dateTime: "2026-10-23T15:00:00Z" }).dateTime, "2026-10-23T16:00:00.000Z");
+    assert.equal(module.zonedWallClockToDate("2026-07-01T09:00:00", "Europe/Lisbon").toISOString(), "2026-07-01T08:00:00.000Z");
+    assert.equal(module.zonedWallClockToDate("2026-12-01T09:00:00", "Europe/Lisbon").toISOString(), "2026-12-01T09:00:00.000Z");
+    assert.equal(module.zonedWallClockToDate("2026-10-23T09:00:00", "America/New_York").toISOString(), "2026-10-23T13:00:00.000Z");
+  } finally {
+    await dispose();
+  }
+});
+
+test("calendar toolkit lists and creates events through the Calendar API and hides itself until connected", async () => {
+  const { module, dispose } = await loadModule("calendar.ts");
+  try {
+    const requests = [];
+    let connected = false;
+    const auth = { accessToken: async () => "token-123", isConnected: async () => connected };
+    const fakeFetch = async (url, init) => {
+      requests.push({ url: new URL(url), init });
+      if (init.method === "POST") {
+        const body = JSON.parse(init.body);
+        return Response.json({ id: "e9", htmlLink: "https://calendar.google.com/x", summary: body.summary, start: body.start, end: body.end, location: body.location });
+      }
+      return Response.json({ items: [
+        { id: "a", summary: "Reunião com a Ana", location: "Lisboa", start: { dateTime: "2026-10-23T14:00:00+01:00" }, end: { dateTime: "2026-10-23T15:00:00+01:00" } },
+        { id: "b", summary: "Feriado", start: { date: "2026-10-24" }, end: { date: "2026-10-25" } },
+        { id: "c", status: "cancelled", summary: "Cancelado", start: { dateTime: "2026-10-23T18:00:00+01:00" } },
+      ] });
+    };
+    const calendar = new module.GoogleCalendarClient({ auth, timeZone: "Europe/Lisbon", locale: "pt", fetch: fakeFetch });
+    const toolkit = module.createCalendarToolkit({ auth, calendar, timeZone: "Europe/Lisbon" });
+
+    assert.deepEqual(await toolkit.tools(), []);
+    assert.match(await toolkit.prompt(), /liga o calendário/);
+    connected = true;
+    assert.deepEqual((await toolkit.tools()).map((tool) => tool.function.name), ["calendar_list_events", "calendar_create_event"]);
+    assert.match(await toolkit.prompt(), /Europe\/Lisbon/);
+
+    const agenda = await toolkit.run("calendar_list_events", { from: "2026-10-23", to: "2026-10-25" });
+    const list = requests[0];
+    assert.equal(list.url.origin + list.url.pathname, "https://www.googleapis.com/calendar/v3/calendars/primary/events");
+    assert.equal(list.init.headers.authorization, "Bearer token-123");
+    assert.equal(list.url.searchParams.get("timeMin"), "2026-10-22T23:00:00.000Z", "local midnight in Lisbon (WEST)");
+    assert.equal(list.url.searchParams.get("singleEvents"), "true");
+    assert.equal(list.url.searchParams.get("orderBy"), "startTime");
+    const lines = agenda.split("\n");
+    assert.equal(lines.length, 2, "cancelled events are dropped");
+    assert.match(lines[0], /14:00.*15:00 Reunião com a Ana \(Lisboa\)$/);
+    assert.match(lines[1], /all day Feriado$/);
+
+    const created = await toolkit.run("calendar_create_event", { title: "Dentista", start: "2026-10-27T10:30", location: "Porto" });
+    const body = JSON.parse(requests[1].init.body);
+    assert.deepEqual(body, {
+      summary: "Dentista",
+      start: { dateTime: "2026-10-27T10:30:00", timeZone: "Europe/Lisbon" },
+      end: { dateTime: "2026-10-27T11:30:00", timeZone: "Europe/Lisbon" },
+      location: "Porto",
+    });
+    assert.match(created, /^Created: .*Dentista \(Porto\)\.$/);
+
+    assert.equal(await toolkit.run("calendar_list_events", { from: "2026-10-25", to: "2026-10-24" }), "Error: 'to' must be after 'from'.");
+    await assert.rejects(toolkit.run("calendar_create_event", { title: "x", start: "2026-10-27", end: "2026-10-27T11:00" }), /both be dates/);
+
+    // Consent revoked mid-session: Grok is told to ask the user to reconnect instead of failing the turn.
+    const revokedAuth = { isConnected: async () => true, accessToken: async () => { throw new module.GoogleNotConnectedError(); } };
+    const revoked = module.createCalendarToolkit({
+      auth: revokedAuth,
+      calendar: new module.GoogleCalendarClient({ auth: revokedAuth, timeZone: "UTC", locale: "en", fetch: fakeFetch }),
+      timeZone: "UTC",
+    });
+    assert.match(await revoked.run("calendar_list_events", { from: "2026-10-23", to: "2026-10-24" }), /no longer connected.*liga o calendário/);
+  } finally {
+    await dispose();
+  }
+});
+
+test("assistant offers toolkit tools, routes their calls, and handles 'liga o calendário' locally", async () => {
+  const { module, dispose } = await loadModule("assistant.ts");
+  try {
+    const calls = [];
+    const toolkit = {
+      tools: async () => [{ type: "function", function: { name: "calendar_list_events", description: "", parameters: {} } }],
+      handles: (name) => name === "calendar_list_events",
+      run: async (name, args) => { calls.push([name, args]); return "14:00 Reunião"; },
+      prompt: async () => "CALENDAR READY",
+    };
+    const requests = [];
+    const replies = [
+      { content: null, toolCalls: [{ id: "k1", type: "function", function: { name: "calendar_list_events", arguments: "{\"from\":\"2026-10-23\",\"to\":\"2026-10-24\"}" } }] },
+      { content: "Tens uma reunião às 14:00.", toolCalls: [] },
+    ];
+    const grok = { async complete(messages, tools) { requests.push({ messages: structuredClone(messages), tools: tools.map((tool) => tool.function.name) }); return replies.shift(); } };
+    let connects = 0;
+    const { context } = actionContext();
+    const assistant = new module.VoiceAssistant({
+      grok, profile: { persona: "", capabilities: "", routines: [] }, actions: context, language: "pt", historyLimit: 20,
+      toolkits: [toolkit], connectCalendar: () => { connects += 1; return "Abri o browser."; },
+    });
+    assert.deepEqual(await assistant.handle("o que tenho hoje?"), { text: "Tens uma reunião às 14:00.", source: "grok" });
+    assert.ok(requests[0].tools.includes("calendar_list_events"));
+    assert.match(requests[0].messages[0].content, /CALENDAR READY/);
+    assert.deepEqual(calls, [["calendar_list_events", { from: "2026-10-23", to: "2026-10-24" }]]);
+    assert.deepEqual(requests[1].messages.at(-1), { role: "tool", tool_call_id: "k1", content: "14:00 Reunião" });
+
+    assert.deepEqual(await assistant.handle("Liga o meu calendário do Google"), { text: "Abri o browser.", source: "local" });
+    assert.deepEqual(await assistant.handle("connect my calendar"), { text: "Abri o browser.", source: "local" });
+    assert.equal(connects, 2);
+    assert.equal(requests.length, 2);
+  } finally {
+    await dispose();
+  }
+});

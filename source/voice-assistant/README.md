@@ -64,6 +64,44 @@ leaves your machine except as context in Grok requests.
 - An unreadable `memory.json` is never overwritten. It is moved aside as
   `memory.json.corrupt-<timestamp>` and reported.
 
+## Google Calendar
+
+Jarvis can read your agenda and create events in your primary Google Calendar.
+It uses the official Calendar API with OAuth for desktop apps: you sign in in
+your browser, Google redirects to a one-shot server on `127.0.0.1`, and the
+code is exchanged with PKCE. Only the refresh token is kept, in
+`google-token.json` (`0600`) next to `ASSISTANT.md`. The scope is
+`calendar.events`: events only, no other Google data.
+
+**One-time setup (about 5 minutes).** Google requires your own OAuth client;
+none can be shipped in this repository.
+
+1. In [Google Cloud Console](https://console.cloud.google.com/), create a
+   project and enable the **Google Calendar API**.
+2. Under **Google Auth Platform**, configure the consent screen (External,
+   Testing is fine) and add your Google account as a **test user**.
+3. Under **Clients**, create a client of type **Desktop app**, then copy its
+   ID and secret.
+4. Provide `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`, either as
+   environment variables or in the app's secrets store, like the other keys.
+5. Say **"liga o calendário"** ("connect my calendar") or run
+   `/google connect` in the terminal, then approve access in your browser.
+
+Then ask things like "o que tenho amanhã?", "estou livre na sexta à tarde?" or
+"marca dentista terça às 10:30 no Porto". Jarvis confirms the title, day and
+time before creating an event unless you already said all of them. The daily
+brief includes today's agenda.
+
+- Times use the system time zone, or `JARVIS_TIMEZONE` (IANA name, e.g.
+  `Europe/Lisbon`). DST is handled.
+- Until you connect, Grok gets no calendar tools. It only knows to tell you
+  how to connect.
+- If access is revoked, Jarvis forgets the token and asks you to reconnect.
+  `/google disconnect` deletes the token and revokes it at Google.
+- While the consent screen is in *Testing*, Google expires refresh tokens after
+  7 days, so you have to reconnect weekly. Publishing the app (no review is
+  needed for personal use with your own account) removes that limit.
+
 ## Desktop (Option+Space)
 
 ![Jarvis HUD: listening, thinking and speaking](../../docs/assets/jarvis-hud.png)
@@ -156,7 +194,7 @@ npm run voice
 
 Press **Enter** to start talking and **Enter** again to stop. You can also type
 a message. Replies print as they stream and are spoken sentence by sentence. Commands: `/mute`, `/routines`, `/run <routine>`, `/memory`,
-`/forget <id|all>`, `/help`, `/quit`.
+`/forget <id|all>`, `/google connect|status|disconnect`, `/help`, `/quit`.
 Pass `--mute` for text-only replies.
 
 | Variable | Default |
@@ -171,6 +209,8 @@ Pass `--mute` for text-only replies.
 | `JARVIS_HISTORY_LIMIT` | `20` messages |
 | `JARVIS_MEMORY` | on (`off` disables `memory.json`) |
 | `JARVIS_CONVERSATION_TTL_HOURS` | `12` (restore the last conversation if newer) |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | unset (Calendar off) |
+| `JARVIS_TIMEZONE` | system time zone |
 
 ## ASSISTANT.md
 
