@@ -8,7 +8,7 @@ import { AudioTagFilter, SpeechPipeline } from "./speech-pipeline.js";
 
 const HELP = `Press Enter to start talking and Enter again to stop, or type a message.
 Commands: /mute  /routines  /run <routine>  /memory  /forget <id|all>
-          /google connect|status|disconnect  /help  /quit`;
+          /reminders  /reminders cancel <id>  /google connect|status|disconnect  /help  /quit`;
 
 async function main(): Promise<void> {
   const config = (() => {
@@ -164,6 +164,12 @@ async function main(): Promise<void> {
         const removed = await memory.forget(target);
         console.log(removed ? `Forgot: ${removed.text}` : `No memory ${target}. Use /memory to list ids.`);
       }
+    } else if (text === "/reminders") {
+      const pending = runtime.voiceReminders.pending;
+      console.log(pending.map((reminder) => `[${reminder.id}] ${new Date(reminder.at).toLocaleString(config.language, { timeZone: config.timeZone })}  ${reminder.text}`).join("\n") || "No reminders pending.");
+    } else if (text.startsWith("/reminders cancel ")) {
+      const removed = await runtime.voiceReminders.cancel(text.slice(18));
+      console.log(removed ? `Cancelled: ${removed.text}` : "No reminder with that id. Use /reminders to list them.");
     } else if (text.startsWith("/google")) {
       const google = runtime.google;
       const command = text.slice(7).trim() || "status";

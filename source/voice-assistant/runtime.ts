@@ -9,7 +9,8 @@ import { GrokClient } from "./grok.js";
 import { createCalendarToolkit, createMeetingJoiner, GoogleCalendarClient, isMeetingUrl } from "./calendar.js";
 import { GOOGLE_TOKEN_FILENAME, GoogleOAuth } from "./google-auth.js";
 import { MEMORY_FILENAME, MemoryStore } from "./memory.js";
-import { EventReminders, type Reminder } from "./reminders.js";
+import { EventReminders } from "./reminders.js";
+import { VOICE_REMINDERS_FILENAME, VoiceReminders, type Announcement } from "./voice-reminders.js";
 import { DEFAULT_ASSISTANT_PROFILE, parseAssistantProfile, type AssistantProfile, type AssistantRoutine } from "./profile.js";
 
 /** Everything a front end (terminal or desktop) needs, built from one config. */
@@ -23,11 +24,13 @@ export interface VoiceAssistantRuntime {
   readonly memory: MemoryStore | null;
   /** Null when GOOGLE_CLIENT_ID is not configured. */
   readonly google: GoogleOAuth | null;
+  /** Reminders set by voice ("lembra-me de … às 17h") and snoozes. */
+  readonly voiceReminders: VoiceReminders;
   /**
-   * Starts announcing calendar events `reminderMinutes` before they begin.
-   * Does nothing (and stop() is a no-op) without Google Calendar or with reminders off.
+   * Starts everything Jarvis says on its own: voice reminders and snoozes, and
+   * calendar events `reminderMinutes` before they begin (with Google Calendar connected).
    */
-  startReminders(announce: (reminder: Reminder) => void): { stop(): void };
+  startReminders(announce: (announcement: Announcement) => void): { stop(): void };
   /** Runs a routine, appends its report to the routine's log file, and returns the report. */
   runRoutine(routine: Pick<AssistantRoutine, "name" | "logFile">): Promise<string>;
 }
@@ -93,7 +96,18 @@ export async function createVoiceAssistantRuntime(
       },
     })
     : null;
-  const toolkits = google && calendar ? [createCalendarToolkit({ auth: google, timeZone: config.timeZone, calendar, ...(joiner ? { joiner } : {}) })] : [];
+  let announceHandler: (announcement: Announcement) => void = () => undefined;
+  const voiceReminders = new VoiceReminders({
+    filePath: path.join(profileDirectory, VOICE_REMINDERS_FILENAME),
+    language: config.language,
+    timeZone: config.timeZone,
+    announce: (announcement) => announceHandler(announcement),
+    onError: (error) => options.onNotice?.(`${portuguese ? "Lembretes" : "Reminders"}: ${error instanceof Error ? error.message : String(error)}`),
+  });
+  const toolkits = [
+    voiceReminders.toolkit(),
+    ...(google && calendar ? [createCalendarToolkit({ auth: google, timeZone: config.timeZone, calendar, ...(joiner ? { joiner } : {}) })] : []),
+  ];
   const connectCalendar = () => {
     if (!google) {
       return portuguese
@@ -128,6 +142,9 @@ export async function createVoiceAssistantRuntime(
     ...(options.onMemoryError ? { onMemoryError: options.onMemoryError } : {}),
     toolkits,
     connectCalendar,
+    snooze: async (minutes) => (await voiceReminders.snooze(minutes)) ?? (portuguese
+      ? "Não há nenhum aviso recente para adiar."
+      : "There is no recent reminder to snooze."),
     joinMeeting: async () => joiner?.join() ?? (portuguese
       ? "Para abrir reuniões, liga primeiro o Google Calendar."
       : "Connect Google Calendar first so I can find your meetings."),
@@ -148,21 +165,35 @@ export async function createVoiceAssistantRuntime(
     createdProfile,
     memory,
     google,
+    voiceReminders,
     startReminders(announce) {
-      if (!google || !calendar || config.reminderMinutes === null) return { stop() {} };
-      const reminders = new EventReminders({
-        listEvents: (from, to) => calendar.listEvents(from, to),
-        isConnected: () => google.isConnected(),
-        leadMinutes: config.reminderMinutes,
-        language: config.language,
-        announce: (reminder) => {
-          joiner?.noteAnnounced(reminder.event);
-          announce(reminder);
+      announceHandler = (announcement) => {
+        if (announcement.event) joiner?.noteAnnounced(announcement.event);
+        announce(announcement);
+      };
+      void voiceReminders.start();
+      const events = google && calendar && config.reminderMinutes !== null
+        ? new EventReminders({
+          listEvents: (from, to) => calendar.listEvents(from, to),
+          isConnected: () => google.isConnected(),
+          leadMinutes: config.reminderMinutes,
+          language: config.language,
+          announce: (reminder) => {
+            const announcement: Announcement = { text: reminder.text, title: `Jarvis · ${reminder.event.summary}`, expiresAt: Date.parse(reminder.event.start), event: reminder.event };
+            voiceReminders.noteAnnounced(announcement);
+            announceHandler(announcement);
+          },
+          onError: (error) => options.onNotice?.(`${portuguese ? "Avisos do calendário" : "Calendar reminders"}: ${error instanceof Error ? error.message : String(error)}`),
+        })
+        : null;
+      events?.start();
+      return {
+        stop: () => {
+          events?.stop();
+          voiceReminders.stop();
+          announceHandler = () => undefined;
         },
-        onError: (error) => options.onNotice?.(`${portuguese ? "Avisos do calendário" : "Calendar reminders"}: ${error instanceof Error ? error.message : String(error)}`),
-      });
-      reminders.start();
-      return { stop: () => reminders.stop() };
+      };
     },
     async runRoutine(routine) {
       const report = await assistant.runRoutine(routine.name);

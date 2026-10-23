@@ -392,7 +392,7 @@ export async function startDesktopVoiceAssistant(deps: DesktopVoiceDeps): Promis
   scheduler.start();
 
   const reminders = runtime.startReminders?.((reminder) => {
-    void announce(reminder.text, `Jarvis · ${reminder.event.summary}`, Date.parse(reminder.event.start)).catch((error: unknown) => deps.reportFailure("reminder", error));
+    void announce(reminder.text, reminder.title, reminder.expiresAt).catch((error: unknown) => deps.reportFailure("reminder", error));
   }) ?? { stop() {} };
 
   return { status: "started", assistant };

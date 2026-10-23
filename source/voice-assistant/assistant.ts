@@ -38,6 +38,8 @@ export interface VoiceAssistantOptions {
   readonly connectCalendar?: () => string;
   /** Opens the current or announced meeting's video call; returns what Jarvis says. */
   readonly joinMeeting?: () => Promise<string>;
+  /** Repeats the latest announcement in N minutes; returns what Jarvis says. */
+  readonly snooze?: (minutes: number) => Promise<string>;
 }
 
 export class VoiceAssistant {
@@ -58,6 +60,11 @@ export class VoiceAssistant {
     if (intent.kind === "stop") return { text: "", source: "stop" };
     if (intent.kind === "connect-calendar" && this.#options.connectCalendar) {
       const text = this.#options.connectCalendar();
+      options.onText?.(text);
+      return { text, source: "local" };
+    }
+    if (intent.kind === "snooze" && this.#options.snooze) {
+      const text = await this.#options.snooze(intent.minutes);
       options.onText?.(text);
       return { text, source: "local" };
     }
