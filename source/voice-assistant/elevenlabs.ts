@@ -1,4 +1,8 @@
+import { wavFromPcm } from "./audio.js";
 import { safeText } from "./grok.js";
+
+// Raw PCM keeps playback and the HUD waveform in sync without an MP3 decoder.
+export const TTS_SAMPLE_RATE = 22_050;
 
 export interface ElevenLabsClientOptions {
   readonly apiKey: string;
@@ -19,19 +23,19 @@ export class ElevenLabsClient {
     this.#fetch = options.fetch ?? fetch;
   }
 
-  /** Returns MP3 bytes. eleven_v3 understands inline audio tags such as [sighs] or [laughs]. */
+  /** Returns WAV bytes. eleven_v3 understands inline audio tags such as [sighs] or [laughs]. */
   async synthesize(text: string, signal?: AbortSignal): Promise<Uint8Array> {
-    const url = `${this.#options.baseUrl}/text-to-speech/${encodeURIComponent(this.#options.voiceId)}?output_format=mp3_44100_128`;
+    const url = `${this.#options.baseUrl}/text-to-speech/${encodeURIComponent(this.#options.voiceId)}?output_format=pcm_${TTS_SAMPLE_RATE}`;
     const response = await this.#fetch(url, {
       method: "POST",
-      headers: { "xi-api-key": this.#options.apiKey, "content-type": "application/json", accept: "audio/mpeg" },
+      headers: { "xi-api-key": this.#options.apiKey, "content-type": "application/json" },
       body: JSON.stringify({ text, model_id: this.#options.ttsModel }),
       ...(signal ? { signal } : {}),
     });
     if (!response.ok) {
       throw new Error(`ElevenLabs TTS failed (${response.status}): ${await safeText(response)}`);
     }
-    return new Uint8Array(await response.arrayBuffer());
+    return wavFromPcm(new Uint8Array(await response.arrayBuffer()), TTS_SAMPLE_RATE);
   }
 
   async transcribe(audio: Uint8Array, filename = "speech.wav", signal?: AbortSignal): Promise<string> {

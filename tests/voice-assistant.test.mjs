@@ -216,8 +216,11 @@ test("Grok and ElevenLabs clients send the documented request shapes", async () 
       apiKey: "el-key", baseUrl: "https://api.elevenlabs.io/v1", voiceId: "voice/1",
       ttsModel: "eleven_v3", sttModel: "scribe_v1", language: "pt", fetch: fakeFetch,
     });
-    assert.deepEqual([...await eleven.synthesize("[sighs] olá")], [1, 2, 3]);
-    assert.equal(seen[1].url, "https://api.elevenlabs.io/v1/text-to-speech/voice%2F1?output_format=mp3_44100_128");
+    const wav = await eleven.synthesize("[sighs] olá");
+    assert.equal(Buffer.from(wav.subarray(0, 4)).toString("ascii"), "RIFF");
+    assert.deepEqual([...wav.subarray(44)], [1, 2, 3]);
+    assert.equal(Buffer.from(wav).readUInt32LE(24), 22050);
+    assert.equal(seen[1].url, "https://api.elevenlabs.io/v1/text-to-speech/voice%2F1?output_format=pcm_22050");
     assert.equal(seen[1].init.headers["xi-api-key"], "el-key");
     assert.deepEqual(JSON.parse(seen[1].init.body), { text: "[sighs] olá", model_id: "eleven_v3" });
 
@@ -253,16 +256,33 @@ test("config requires both API keys and applies defaults", async () => {
 test("audio command selection prefers sox and falls back to ffmpeg", async () => {
   const { module, dispose } = await loadModule("audio.ts");
   try {
-    assert.equal(module.recorderCommand("o.wav", "darwin", (name) => name === "sox").file, "sox");
-    assert.deepEqual(module.recorderCommand("o.wav", "darwin", (name) => name === "ffmpeg").args.slice(3, 7), ["-f", "avfoundation", "-i", ":0"]);
-    assert.equal(module.recorderCommand("o.wav", "win32", (name) => name === "ffmpeg"), null);
-    assert.equal(module.playerCommand("r.mp3", "darwin", () => false).file, "afplay");
-    assert.equal(module.playerCommand("r.mp3", "linux", (name) => name === "mpg123").file, "mpg123");
-    assert.equal(module.playerCommand("r.mp3", "linux", () => false), null);
+    const sox = module.recorderCommand("darwin", (name) => name === "sox");
+    assert.equal(sox.file, "sox");
+    assert.deepEqual(sox.args, ["-q", "-d", "-t", "raw", "-r", "16000", "-c", "1", "-b", "16", "-e", "signed-integer", "-"]);
+    const ffmpeg = module.recorderCommand("darwin", (name) => name === "ffmpeg");
+    assert.deepEqual(ffmpeg.args.slice(2, 6), ["-f", "avfoundation", "-i", ":0"]);
+    assert.deepEqual(ffmpeg.args.slice(-3), ["-f", "s16le", "-"]);
+    assert.equal(module.recorderCommand("win32", (name) => name === "ffmpeg"), null);
+    assert.equal(module.playerCommand("r.wav", "darwin", () => false).file, "afplay");
+    assert.equal(module.playerCommand("r.wav", "linux", (name) => name === "aplay").file, "aplay");
+    assert.equal(module.playerCommand("r.wav", "linux", () => false), null);
+    assert.match(module.toolEnv({ PATH: "/usr/bin" }, "darwin").PATH, /^\/usr\/bin:.*\/opt\/homebrew\/bin/);
   } finally {
     await dispose();
   }
 });
+
+// A WAV of n loud-then-silent samples at 1 kHz, enough for a few envelope windows.
+function wavOf(samples) {
+  const pcm = Buffer.alloc(Math.max(200, samples) * 2);
+  for (let index = 0; index < pcm.length / 4; index += 1) pcm.writeInt16LE(index % 2 ? 20000 : -20000, index * 2);
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0, "ascii"); header.writeUInt32LE(36 + pcm.length, 4); header.write("WAVEfmt ", 8, "ascii");
+  header.writeUInt32LE(16, 16); header.writeUInt16LE(1, 20); header.writeUInt16LE(1, 22); header.writeUInt32LE(1000, 24);
+  header.writeUInt32LE(2000, 28); header.writeUInt16LE(2, 32); header.writeUInt16LE(16, 34); header.write("data", 36, "ascii");
+  header.writeUInt32LE(pcm.length, 40);
+  return new Uint8Array(Buffer.concat([header, pcm]));
+}
 
 function desktopHarness(overrides = {}) {
   const events = [];
@@ -279,16 +299,19 @@ function desktopHarness(overrides = {}) {
       register: (accelerator, callback) => { shortcuts.set(accelerator, callback); return true; },
       unregister: (accelerator) => shortcuts.delete(accelerator),
     },
-    startRecording: async () => ({ stop: async () => new Uint8Array(16_000) }),
+    startRecording: async (options) => {
+      options.onLevel?.(0.5);
+      return { stop: async () => new Uint8Array(16_000) };
+    },
     player: {
-      play: (audio) => new Promise((resolve) => { events.push(["play", audio.length]); playResolve = resolve; }),
+      play: (audio, onStart) => new Promise((resolve) => { events.push(["play", audio.length]); onStart?.(); playResolve = resolve; }),
       stop: () => { events.push(["player-stop"]); playResolve?.(); playResolve = null; },
     },
     createRuntime: async (config) => {
       events.push(["config", config.xaiApiKey, config.elevenLabsApiKey]);
       return {
         profile: { persona: "", capabilities: "", routines: [] },
-        voice: { transcribe: async () => "que horas são?", synthesize: async (text) => new Uint8Array(text.length) },
+        voice: { transcribe: async () => "que horas são?", synthesize: async (text) => wavOf(text.length) },
         assistant: { handle: async (text) => ({ text: `[laughs] ${text} 09:30`, source: "local" }) },
         runRoutine: async () => "",
       };
@@ -411,5 +434,111 @@ test("Electron adapter maps globalShortcut, notifications and macOS microphone a
     assert.equal(calls.length, 4);
   } finally {
     await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("PCM helpers round-trip WAV and measure loudness for the waveform", async () => {
+  const { module, dispose } = await loadModule("audio.ts");
+  try {
+    const pcm = new Uint8Array(Buffer.from(new Int16Array([0, 16000, -16000, 0]).buffer));
+    const wav = module.wavFromPcm(pcm, 16000);
+    assert.equal(wav.length, 44 + pcm.length);
+    assert.deepEqual(module.pcmFromWav(wav), { pcm, sampleRate: 16000 });
+    assert.equal(module.pcmFromWav(new Uint8Array(10)), null);
+    assert.equal(module.pcmLevel(new Uint8Array(0)), 0);
+    assert.equal(module.pcmLevel(new Uint8Array(400)), 0);
+    const loud = module.pcmLevel(new Uint8Array(Buffer.from(new Int16Array(200).fill(30000).buffer)));
+    const quiet = module.pcmLevel(new Uint8Array(Buffer.from(new Int16Array(200).fill(300).buffer)));
+    assert.ok(loud > 0.9 && loud <= 1, `loud=${loud}`);
+    assert.ok(quiet > 0 && quiet < loud / 3, `quiet=${quiet}`);
+    const envelope = module.pcmEnvelope(new Uint8Array(1000 * 2), 1000, 50);
+    assert.equal(envelope.length, 20);
+  } finally {
+    await dispose();
+  }
+});
+
+test("desktop controller streams states, levels and both sides of the conversation to the HUD", async () => {
+  const { module, dispose } = await loadModule("desktop-controller.ts");
+  try {
+    const hudEvents = [];
+    const harness = desktopHarness({ hud: { update: (event) => hudEvents.push(event), dispose: () => hudEvents.push({ type: "disposed" }) } });
+    const { assistant } = await module.startDesktopVoiceAssistant(harness.deps);
+    await assistant.toggle();
+    const turn = assistant.toggle();
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    harness.finishPlayback();
+    await turn;
+
+    const states = hudEvents.filter((event) => event.type === "state").map((event) => event.state);
+    assert.deepEqual(states, ["listening", "thinking", "speaking", "idle"]);
+    assert.deepEqual(hudEvents.filter((event) => event.type === "text"), [
+      { type: "text", speaker: "you", text: "que horas são?" },
+      { type: "text", speaker: "jarvis", text: "que horas são? 09:30" },
+    ]);
+    const levels = hudEvents.filter((event) => event.type === "level").map((event) => event.level);
+    assert.equal(levels[0], 0.5, "microphone level is forwarded");
+    assert.ok(levels.length >= 2, "playback envelope is streamed while speaking");
+    assert.ok(!harness.events.some((event) => event[0] === "notify"), "replies go to the HUD, not notifications");
+
+    assistant.dispose();
+    assert.deepEqual(hudEvents.at(-1), { type: "disposed" });
+  } finally {
+    await dispose();
+  }
+});
+
+test("HUD window is click-through, created on demand and destroyed after going idle", async () => {
+  const { module, dispose } = await loadModule("../electron-main/voice-assistant/hud-window.ts");
+  try {
+    const windows = [];
+    class FakeWindow {
+      constructor(options) {
+        this.options = options; this.calls = []; this.scripts = []; this.destroyed = false;
+        this.webContents = { executeJavaScript: async (code) => { this.scripts.push(code); } };
+        windows.push(this);
+      }
+      async loadURL(url) { this.url = url; }
+      showInactive() { this.calls.push("showInactive"); }
+      hide() {}
+      destroy() { this.destroyed = true; }
+      isDestroyed() { return this.destroyed; }
+      setPosition(x, y) { this.position = [x, y]; }
+      setAlwaysOnTop(flag, level) { this.calls.push(`top:${level}`); }
+      setVisibleOnAllWorkspaces() { this.calls.push("allSpaces"); }
+      setIgnoreMouseEvents(ignore) { this.calls.push(`ignoreMouse:${ignore}`); }
+    }
+    const screen = { getCursorScreenPoint: () => ({ x: 0, y: 0 }), getDisplayNearestPoint: () => ({ workArea: { x: 0, y: 25, width: 1440, height: 875 } }) };
+    const hud = new module.JarvisHudWindow({ BrowserWindow: FakeWindow, screen }, "pt-PT");
+
+    hud.update({ type: "level", level: 0.4 });
+    hud.update({ type: "state", state: "idle" });
+    assert.equal(windows.length, 0, "no window until there is something to show");
+
+    hud.update({ type: "state", state: "listening" });
+    hud.update({ type: "level", level: 0.42 });
+    hud.update({ type: "level", level: 2 });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    const [window] = windows;
+    assert.equal(window.options.focusable, false);
+    assert.equal(window.options.transparent, true);
+    assert.equal(window.options.webPreferences.nodeIntegration, false);
+    assert.equal(window.options.webPreferences.sandbox, true);
+    assert.deepEqual(window.position, [500, 43]);
+    assert.ok(window.calls.includes("ignoreMouse:true") && window.calls.includes("top:screen-saver") && window.calls.includes("showInactive"));
+    assert.match(decodeURIComponent(window.url), /A ouvir…/);
+    assert.ok(window.scripts.includes('window.hud && window.hud.update({"type":"state","state":"listening"})'));
+    assert.ok(window.scripts.includes('window.hud && window.hud.update({"type":"levels","levels":[0.42,1]})'));
+
+    hud.update({ type: "text", speaker: "jarvis", text: "</script><img src=x onerror=alert(1)>" });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.ok(window.scripts.at(-1).includes('"text":"</script><img src=x onerror=alert(1)>"'), "text is passed as JSON data");
+
+    hud.update({ type: "state", state: "idle" });
+    assert.equal(window.destroyed, false);
+    hud.dispose();
+    assert.equal(window.destroyed, true);
+  } finally {
+    await dispose();
   }
 });

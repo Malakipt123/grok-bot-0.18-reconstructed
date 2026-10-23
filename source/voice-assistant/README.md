@@ -40,6 +40,8 @@ microphone ──sox/ffmpeg──▶ ElevenLabs Scribe (speech-to-text)
 
 ## Desktop (Option+Space)
 
+![Jarvis HUD: listening, thinking and speaking](../../docs/assets/jarvis-hud.png)
+
 1. Provide `XAI_API_KEY` and `ELEVENLABS_API_KEY` in one of two ways:
    - save them in the app's encrypted secrets store, the same one that holds
      box secrets and `OPENROUTER_API_KEY`; or
@@ -53,7 +55,12 @@ Then:
 
 - Press **Option+Space** to start listening (you hear a *Tink*). Press it again
   to send (*Pop*). Recording stops on its own after 30 seconds.
-- The reply appears as a notification and is spoken by ElevenLabs.
+- A floating **HUD** appears at the top of the screen with an arc-reactor ring
+  and a live waveform. While you speak it follows your microphone; while
+  Jarvis answers it follows the reply audio. The ring turns amber while Grok
+  thinks, and the HUD shows what you said and what Jarvis answers. It never
+  takes focus and lets clicks pass through. It fades out a few seconds after
+  Jarvis finishes. `JARVIS_HUD=off` falls back to OS notifications.
 - Pressing Option+Space while Jarvis is talking interrupts it and starts
   listening again.
 - Routines from `ASSISTANT.md` run in the background and are spoken when the
@@ -67,9 +74,19 @@ Then:
 non-modifier key. That is why the shortcut is Option+Space toggle-to-talk
 rather than holding the right Option key on its own.
 
-Source: `desktop-controller.ts` (state machine: idle → listening → thinking →
-speaking) and `source/electron-main/voice-assistant/electron-voice-assistant.ts`
-(Electron adapter, started from `main-production-services.ts`).
+Source:
+
+- `desktop-controller.ts`: state machine (idle → listening → thinking →
+  speaking) that emits HUD events;
+- `source/electron-main/voice-assistant/electron-voice-assistant.ts`: the
+  Electron adapter, started from `main-production-services.ts`;
+- `hud-window.ts` / `hud-page.ts`: the HUD window and its page. The page runs
+  sandboxed with no Node access, under a CSP that blocks all network access.
+  It only receives JSON events.
+
+Recording streams raw PCM from sox/ffmpeg into Node, and ElevenLabs returns
+raw PCM (`pcm_22050`). The waveform is computed from the same audio you hear,
+with no MP3 decoder or native module.
 
 ## Terminal setup
 

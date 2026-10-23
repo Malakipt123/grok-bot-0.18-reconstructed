@@ -1,5 +1,5 @@
 import { stripAudioTags } from "./assistant.js";
-import { AudioPlayer, startRecording as startSystemRecording, type Recording } from "./audio.js";
+import { AudioPlayer, pcmEnvelope, pcmFromWav, startRecording as startSystemRecording, type Recording, type RecordingOptions } from "./audio.js";
 import { loadVoiceAssistantConfig, type VoiceAssistantConfig } from "./config.js";
 import { createVoiceAssistantRuntime, type VoiceAssistantRuntime } from "./runtime.js";
 import { RoutineScheduler } from "./scheduler.js";
@@ -13,6 +13,19 @@ export const VOICE_SECRET_KEYS = ["XAI_API_KEY", "ELEVENLABS_API_KEY"] as const;
 const MIN_SPEECH_BYTES = 8_000; // ~0.25 s of 16 kHz mono PCM
 
 export type DesktopVoiceState = "idle" | "listening" | "thinking" | "speaking";
+
+/** What the HUD window draws: the state ring, the live waveform, and the last lines spoken. */
+export type DesktopVoiceHudEvent =
+  | { readonly type: "state"; readonly state: DesktopVoiceState }
+  | { readonly type: "level"; readonly level: number }
+  | { readonly type: "text"; readonly speaker: "you" | "jarvis"; readonly text: string };
+
+export interface DesktopVoiceHudPort {
+  update(event: DesktopVoiceHudEvent): void;
+  dispose(): void;
+}
+
+const ENVELOPE_WINDOW_MS = 50;
 
 export interface DesktopVoiceShortcutPort {
   register(accelerator: string, callback: () => void): boolean;
@@ -28,9 +41,11 @@ export interface DesktopVoiceDeps {
   readonly env?: NodeJS.ProcessEnv;
   readonly cue?: (kind: "start" | "stop") => void;
   readonly onStateChange?: (state: DesktopVoiceState) => void;
+  /** When present, replies go to the HUD instead of OS notifications. */
+  readonly hud?: DesktopVoiceHudPort;
   readonly createRuntime?: (config: VoiceAssistantConfig) => Promise<Pick<VoiceAssistantRuntime, "assistant" | "voice" | "profile" | "runRoutine">>;
-  readonly startRecording?: () => Promise<Recording>;
-  readonly player?: { play(mp3: Uint8Array): Promise<void>; stop(): void };
+  readonly startRecording?: (options: RecordingOptions) => Promise<Recording>;
+  readonly player?: { play(wav: Uint8Array, onStart?: () => void): Promise<void>; stop(): void };
   readonly maxRecordingMs?: number;
 }
 
@@ -78,9 +93,21 @@ export async function startDesktopVoiceAssistant(deps: DesktopVoiceDeps): Promis
   // Bumped whenever a new interaction starts, so a stale reply never resets a newer state.
   let generation = 0;
 
+  let envelopeTimer: NodeJS.Timeout | null = null;
+  const stopEnvelope = () => {
+    if (envelopeTimer) clearInterval(envelopeTimer);
+    envelopeTimer = null;
+  };
+  const hud = deps.hud;
   const setState = (next: DesktopVoiceState) => {
     state = next;
+    if (next !== "speaking") stopEnvelope();
     deps.onStateChange?.(next);
+    hud?.update({ type: "state", state: next });
+  };
+  const showText = (speaker: "you" | "jarvis", text: string) => {
+    if (hud) hud.update({ type: "text", speaker, text });
+    else if (speaker === "jarvis") deps.notify("Jarvis", text);
   };
   const fail = (leg: string, error: unknown) => {
     deps.reportFailure(leg, error);
@@ -90,11 +117,22 @@ export async function startDesktopVoiceAssistant(deps: DesktopVoiceDeps): Promis
 
   const speak = async (text: string, turn: number) => {
     if (!text) return;
-    deps.notify("Jarvis", stripAudioTags(text));
+    showText("jarvis", stripAudioTags(text));
     const audio = await runtime.voice.synthesize(text);
     if (turn !== generation || disposed) return;
     setState("speaking");
-    await player.play(audio);
+    const decoded = hud ? pcmFromWav(audio) : null;
+    const envelope = decoded ? pcmEnvelope(decoded.pcm, decoded.sampleRate, ENVELOPE_WINDOW_MS) : [];
+    await player.play(audio, () => {
+      if (envelope.length === 0 || turn !== generation) return;
+      const startedAt = Date.now();
+      stopEnvelope();
+      envelopeTimer = setInterval(() => {
+        const level = envelope[Math.floor((Date.now() - startedAt) / ENVELOPE_WINDOW_MS)];
+        if (level === undefined) return stopEnvelope();
+        hud?.update({ type: "level", level });
+      }, ENVELOPE_WINDOW_MS);
+    });
     if (turn === generation && state === "speaking") setState("idle");
   };
 
@@ -108,7 +146,7 @@ export async function startDesktopVoiceAssistant(deps: DesktopVoiceDeps): Promis
         return;
       }
     }
-    recording = await record();
+    recording = await record({ onLevel: (level) => hud?.update({ type: "level", level }) });
     if (turn !== generation || disposed) {
       void recording.stop().catch(() => undefined);
       recording = null;
@@ -133,10 +171,12 @@ export async function startDesktopVoiceAssistant(deps: DesktopVoiceDeps): Promis
       if (audio.length < MIN_SPEECH_BYTES) return setState("idle");
       const transcript = await runtime.voice.transcribe(audio);
       if (!transcript) return setState("idle");
+      showText("you", transcript);
       const reply = await runtime.assistant.handle(transcript);
       if (turn !== generation) return;
-      setState("idle");
-      if (reply.source !== "stop") await speak(reply.text, turn);
+      // Stay in "thinking" until speech is ready so the HUD does not flicker.
+      if (reply.source === "stop" || !reply.text) setState("idle");
+      else await speak(reply.text, turn);
     } catch (error) {
       if (turn === generation) fail("turn", error);
     }
@@ -166,11 +206,14 @@ export async function startDesktopVoiceAssistant(deps: DesktopVoiceDeps): Promis
       if (recordingTimer) clearTimeout(recordingTimer);
       void recording?.stop().catch(() => undefined);
       recording = null;
+      stopEnvelope();
       player.stop();
+      hud?.dispose();
     },
   };
 
   if (!deps.shortcut.register(accelerator, () => void assistant.toggle())) {
+    hud?.dispose();
     return { status: "shortcut-unavailable", detail: `${accelerator} is already used by another application. Set JARVIS_SHORTCUT to another accelerator.` };
   }
 
@@ -179,6 +222,7 @@ export async function startDesktopVoiceAssistant(deps: DesktopVoiceDeps): Promis
     run: async (routine) => {
       const report = await runtime.runRoutine(routine);
       if (state === "idle") await speak(report, generation);
+      else if (hud) hud.update({ type: "text", speaker: "jarvis", text: stripAudioTags(report) });
       else deps.notify(`Jarvis · ${routine.name}`, stripAudioTags(report));
     },
     onError: (routine, error) => deps.reportFailure(`routine:${routine.name}`, error),

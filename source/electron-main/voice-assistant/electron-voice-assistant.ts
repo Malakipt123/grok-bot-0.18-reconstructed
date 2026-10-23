@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
 
 import { startDesktopVoiceAssistant, type DesktopVoiceAssistant, type DesktopVoiceDeps } from "../../voice-assistant/desktop-controller.js";
+import { JarvisHudWindow, type HudElectronPorts } from "./hud-window.js";
 
-interface ElectronVoiceRuntime {
+interface ElectronVoiceRuntime extends HudElectronPorts {
   readonly globalShortcut: { register(accelerator: string, callback: () => void): boolean; unregister(accelerator: string): void };
   readonly Notification: (new (options: { title: string; body: string; silent?: boolean }) => { show(): void }) & { isSupported(): boolean };
   readonly systemPreferences: {
@@ -27,7 +28,9 @@ const MAC_CUES = { start: "/System/Library/Sounds/Tink.aiff", stop: "/System/Lib
 
 export function createElectronVoiceAssistantDeps(bindings: ElectronVoiceAssistantBindings, electron = loadElectronVoiceRuntime("electron")): DesktopVoiceDeps {
   const { globalShortcut, Notification, systemPreferences } = electron;
+  const hud = bindings.env.JARVIS_HUD?.trim().toLowerCase() === "off" ? undefined : new JarvisHudWindow(electron, bindings.env.JARVIS_LANGUAGE || "pt");
   return {
+    ...(hud ? { hud } : {}),
     env: bindings.env,
     readSecret: bindings.readSecret,
     reportFailure: bindings.reportFailure,
