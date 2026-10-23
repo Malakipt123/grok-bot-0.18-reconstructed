@@ -1,5 +1,7 @@
 # Grok Bot 0.18 — reconstructed and extended
 
+[![repository checks](https://github.com/Malakipt123/grok-bot-0.18-reconstructed/actions/workflows/check.yml/badge.svg?branch=main)](https://github.com/Malakipt123/grok-bot-0.18-reconstructed/actions/workflows/check.yml)
+
 ![Grok Bot Router settings with Codex selected and local usage totals](docs/assets/router-settings.png)
 
 This repository is an unofficial, source-oriented reconstruction of the
@@ -97,6 +99,24 @@ tool execution across routed conversations.
 **Usage & Billing** shows the locally recorded request and token totals for
 providers that return usage data. These figures are activity records, not an
 authoritative provider invoice.
+
+### Jarvis voice assistant
+
+Press **Option+Space** anywhere to talk to Jarvis, even when the app is in
+the background. A floating HUD shows an animated arc-reactor ring, a live
+waveform, and the reply streaming in word by word while Jarvis speaks it
+sentence by sentence. `npm run voice` runs the same assistant in a terminal. It uses ElevenLabs
+Scribe for speech-to-text, Grok (xAI) for reasoning and tool calls, and
+ElevenLabs `eleven_v3` for speech. Simple commands such as opening apps,
+setting the volume, telling the time or taking notes run locally without an
+LLM call. An `ASSISTANT.md` profile defines the persona and daily routines,
+and a local `memory.json` keeps facts about you and the recent conversation
+across restarts. With your own Google OAuth client it can also read and create
+Google Calendar events, remind you out loud ten minutes before each one, and
+open the Google Meet when you say "abre a reunião".
+It needs `XAI_API_KEY` and `ELEVENLABS_API_KEY` (as app secrets or environment
+variables) and sox or ffmpeg; see
+[source/voice-assistant/README.md](source/voice-assistant/README.md).
 
 ### Local Docker sandbox
 
@@ -207,6 +227,7 @@ npm run package           # build, sign, and verify the macOS app
 npm run verify            # verify an existing packaged app
 npm run smoke             # bounded native smoke check
 npm run publication:check # prove a fresh-history export is lossless
+npm run voice             # Grok + ElevenLabs voice assistant (needs API keys)
 ```
 
 Generated directories including `.cache`, `.build`, `dist`, `src/app/dist`,
