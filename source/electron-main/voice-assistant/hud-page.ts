@@ -39,6 +39,10 @@ export function renderHudPage(labels: HudLabels): string {
   .line { height: 34px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
     line-height: 17px; font-size: 12.5px; color: #f2fdff; }
   .line.you { color: rgba(232, 251, 255, .6); font-style: italic; }
+  .line.jarvis { display: block; scroll-behavior: smooth; }
+  .w { color: rgba(242, 253, 255, .42); transition: color .18s ease, text-shadow .18s ease; animation: word-in .22s ease-out both; }
+  .w.spoken { color: #ffffff; text-shadow: 0 0 7px var(--cyan-soft); }
+  @keyframes word-in { from { opacity: 0; filter: blur(2px); } to { opacity: 1; filter: none; } }
 </style></head>
 <body>
 <div class="hud" id="hud" data-state="idle">
@@ -59,7 +63,38 @@ export function renderHudPage(labels: HudLabels): string {
   const wave = document.getElementById("wave").getContext("2d");
   const BARS = 56;
   const history = new Array(BARS).fill(0);
-  let state = "idle", level = 0, target = 0, spin = 0, started = performance.now();
+  let state = "idle", level = 0, target = 0, spin = 0;
+  // Current Jarvis reply, rendered as one span per word.
+  let replyText = "", wordSpans = [], spokenWords = 0;
+
+  function startReply() {
+    replyText = ""; wordSpans = []; spokenWords = 0;
+    line.textContent = "";
+    line.className = "line jarvis";
+  }
+
+  function appendReply(delta) {
+    if (!line.classList.contains("jarvis")) startReply();
+    replyText += delta;
+    const words = replyText.trim().split(/\\s+/).filter(Boolean);
+    // The last word may still be growing, so it is updated in place.
+    if (wordSpans.length > 0 && words.length >= wordSpans.length) wordSpans[wordSpans.length - 1].textContent = words[wordSpans.length - 1];
+    for (let index = wordSpans.length; index < words.length; index += 1) {
+      if (index > 0) line.appendChild(document.createTextNode(" "));
+      const span = document.createElement("span");
+      span.className = index < spokenWords ? "w spoken" : "w";
+      span.textContent = words[index];
+      line.appendChild(span);
+      wordSpans.push(span);
+    }
+    line.scrollTop = line.scrollHeight;
+  }
+
+  function markSpoken(count) {
+    const next = Math.min(Math.max(0, Math.floor(Number(count) || 0)), 1000000);
+    for (let index = spokenWords; index < Math.min(next, wordSpans.length); index += 1) wordSpans[index].classList.add("spoken");
+    spokenWords = Math.max(spokenWords, next);
+  }
 
   const color = () => getComputedStyle(hud).getPropertyValue("--cyan").trim() || "#46e8ff";
 
@@ -147,9 +182,17 @@ export function renderHudPage(labels: HudLabels): string {
       } else if (event.type === "levels" && Array.isArray(event.levels)) {
         for (const value of event.levels) target = Math.max(target, Math.min(1, Math.max(0, Number(value) || 0)));
       } else if (event.type === "text") {
-        line.textContent = String(event.text || "");
-        line.className = event.speaker === "you" ? "line you" : "line";
+        if (event.speaker === "jarvis") { startReply(); appendReply(String(event.text || "")); markSpoken(1000000); }
+        else { line.textContent = String(event.text || ""); line.className = "line you"; }
         hud.classList.add("visible");
+      } else if (event.type === "reply-start") {
+        startReply();
+        hud.classList.add("visible");
+      } else if (event.type === "reply-delta") {
+        appendReply(String(event.text || ""));
+        hud.classList.add("visible");
+      } else if (event.type === "spoken") {
+        markSpoken(event.words);
       } else if (event.type === "hide") {
         hud.classList.remove("visible");
       }

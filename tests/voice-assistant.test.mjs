@@ -284,10 +284,19 @@ function wavOf(samples) {
   return new Uint8Array(Buffer.concat([header, pcm]));
 }
 
+async function waitFor(condition, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error("waitFor timed out");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 function desktopHarness(overrides = {}) {
   const events = [];
   const shortcuts = new Map();
   let playResolve = null;
+  let released = false;
   const deps = {
     env: { XAI_API_KEY: "x" },
     readSecret: async (key) => (key === "ELEVENLABS_API_KEY" ? "from-secrets" : null),
@@ -304,7 +313,12 @@ function desktopHarness(overrides = {}) {
       return { stop: async () => new Uint8Array(16_000) };
     },
     player: {
-      play: (audio, onStart) => new Promise((resolve) => { events.push(["play", audio.length]); onStart?.(); playResolve = resolve; }),
+      play: (audio, onStart) => new Promise((resolve) => {
+        events.push(["play", audio.length]);
+        onStart?.();
+        if (released) setTimeout(resolve, 5);
+        else playResolve = resolve;
+      }),
       stop: () => { events.push(["player-stop"]); playResolve?.(); playResolve = null; },
     },
     createRuntime: async (config) => {
@@ -312,13 +326,20 @@ function desktopHarness(overrides = {}) {
       return {
         profile: { persona: "", capabilities: "", routines: [] },
         voice: { transcribe: async () => "que horas são?", synthesize: async (text) => wavOf(text.length) },
-        assistant: { handle: async (text) => ({ text: `[laughs] ${text} 09:30`, source: "local" }) },
+        assistant: {
+          handle: async (text, options = {}) => {
+            const reply = `[laughs] ${text} 09:30`;
+            options.onText?.(reply);
+            return { text: reply, source: "local" };
+          },
+        },
         runRoutine: async () => "",
       };
     },
     ...overrides,
   };
-  return { deps, events, shortcuts, finishPlayback: () => { playResolve?.(); playResolve = null; } };
+  // Releases the sentence that is playing and lets every later sentence finish on its own.
+  return { deps, events, shortcuts, finishPlayback: () => { released = true; playResolve?.(); playResolve = null; } };
 }
 
 test("desktop voice assistant toggles listening on the global shortcut and speaks the reply", async () => {
@@ -334,8 +355,7 @@ test("desktop voice assistant toggles listening on the global shortcut and speak
     await result.assistant.toggle();
     assert.equal(result.assistant.state, "listening");
     const finished = result.assistant.toggle();
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(result.assistant.state, "speaking");
+    await waitFor(() => result.assistant.state === "speaking");
     harness.finishPlayback();
     await finished;
     assert.equal(result.assistant.state, "idle");
@@ -357,8 +377,7 @@ test("pressing the shortcut while Jarvis speaks interrupts playback and listens 
     const { assistant } = await module.startDesktopVoiceAssistant(harness.deps);
     await assistant.toggle();
     const firstTurn = assistant.toggle();
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(assistant.state, "speaking");
+    await waitFor(() => assistant.state === "speaking");
     await assistant.toggle();
     await firstTurn;
     assert.equal(assistant.state, "listening");
@@ -466,16 +485,20 @@ test("desktop controller streams states, levels and both sides of the conversati
     const { assistant } = await module.startDesktopVoiceAssistant(harness.deps);
     await assistant.toggle();
     const turn = assistant.toggle();
+    await waitFor(() => assistant.state === "speaking");
     await new Promise((resolve) => setTimeout(resolve, 120));
     harness.finishPlayback();
     await turn;
 
     const states = hudEvents.filter((event) => event.type === "state").map((event) => event.state);
     assert.deepEqual(states, ["listening", "thinking", "speaking", "idle"]);
-    assert.deepEqual(hudEvents.filter((event) => event.type === "text"), [
-      { type: "text", speaker: "you", text: "que horas são?" },
-      { type: "text", speaker: "jarvis", text: "que horas são? 09:30" },
+    assert.deepEqual(hudEvents.filter((event) => event.type === "text"), [{ type: "text", speaker: "you", text: "que horas são?" }]);
+    assert.deepEqual(hudEvents.filter((event) => event.type.startsWith("reply")), [
+      { type: "reply-start" },
+      { type: "reply-delta", text: " que horas são? 09:30" },
     ]);
+    const spoken = hudEvents.filter((event) => event.type === "spoken").map((event) => event.words);
+    assert.ok(spoken.length >= 2 && spoken.at(-1) === 1_000_000, `spoken=${spoken}`);
     const levels = hudEvents.filter((event) => event.type === "level").map((event) => event.level);
     assert.equal(levels[0], 0.5, "microphone level is forwarded");
     assert.ok(levels.length >= 2, "playback envelope is streamed while speaking");
@@ -538,6 +561,208 @@ test("HUD window is click-through, created on demand and destroyed after going i
     assert.equal(window.destroyed, false);
     hud.dispose();
     assert.equal(window.destroyed, true);
+  } finally {
+    await dispose();
+  }
+});
+
+function sseBody(events, splitAt = 7) {
+  const text = events.map((event) => `data: ${typeof event === "string" ? event : JSON.stringify(event)}\n\n`).join("");
+  const bytes = new TextEncoder().encode(text);
+  return new ReadableStream({
+    start(controller) {
+      // Deliberately cut chunks mid-line and mid-UTF-8 sequence.
+      for (let offset = 0; offset < bytes.length; offset += splitAt) controller.enqueue(bytes.slice(offset, offset + splitAt));
+      controller.close();
+    },
+  });
+}
+
+test("Grok streaming parses SSE deltas and assembles tool calls split across chunks", async () => {
+  const { module, dispose } = await loadModule("grok.ts");
+  try {
+    const deltas = [];
+    const completion = await module.readChatCompletionStream(sseBody([
+      { choices: [{ delta: { role: "assistant", content: "Já " } }] },
+      { choices: [{ delta: { content: "está, ação!" } }] },
+      { choices: [{ delta: { tool_calls: [{ index: 0, id: "call_9", type: "function", function: { name: "open_", arguments: "{\"url\":" } }] } }] },
+      { choices: [{ delta: { tool_calls: [{ index: 0, function: { name: "url", arguments: "\"https://x.ai\"}" } }] } }] },
+      { choices: [], usage: { total_tokens: 3 } },
+      "[DONE]",
+    ]), (delta) => deltas.push(delta));
+    assert.deepEqual(deltas, ["Já ", "está, ação!"]);
+    assert.equal(completion.content, "Já está, ação!");
+    assert.deepEqual(completion.toolCalls, [{ id: "call_9", type: "function", function: { name: "open_url", arguments: "{\"url\":\"https://x.ai\"}" } }]);
+
+    let body;
+    const client = new module.GrokClient({
+      apiKey: "k", baseUrl: "https://api.x.ai/v1", model: "grok-4",
+      fetch: async (_url, init) => { body = JSON.parse(init.body); return new Response(sseBody([{ choices: [{ delta: { content: "ok" } }] }, "[DONE]"])); },
+    });
+    assert.equal((await client.stream([{ role: "user", content: "hi" }])).content, "ok");
+    assert.equal(body.stream, true);
+  } finally {
+    await dispose();
+  }
+});
+
+test("sentence chunker emits speakable sentences without splitting numbers or abbreviations", async () => {
+  const { module, dispose } = await loadModule("speech-pipeline.ts");
+  try {
+    const chunker = new module.SentenceChunker();
+    const out = [];
+    for (const delta of ["São 9", ".30 da manhã. ", "Ok. O ", "tempo está ótimo hoje! Quer", " o resumo?", " Diga"]) out.push(...chunker.push(delta));
+    // "9.30" is not a sentence end, and the too-short "Ok." joins the next sentence.
+    assert.deepEqual(out, ["São 9.30 da manhã.", "Ok. O tempo está ótimo hoje!", "Quer o resumo?"]);
+    assert.equal(chunker.flush(), "Diga");
+    assert.equal(chunker.flush(), null);
+
+    const long = new module.SentenceChunker();
+    const first = long.push("Primeiro, vou verificar o calendário, depois os emails importantes, e por fim as notícias do dia de hoje");
+    assert.equal(first.length, 1, "the first sentence is cut early at a comma");
+    assert.ok(first[0].endsWith(","));
+
+    const filter = new module.AudioTagFilter();
+    assert.equal(filter.push("[la") + filter.push("ughs] Olá [si") + filter.push("ghs] tudo bem? [nota longa que não é uma etiqueta de áudio nenhuma]"), " Olá  tudo bem? [nota longa que não é uma etiqueta de áudio nenhuma]");
+    assert.equal(filter.push("[aberta"), "");
+    assert.equal(filter.flush(), "[aberta");
+    assert.deepEqual(module.displayWords("[laughs] Olá,  mundo"), ["Olá,", "mundo"]);
+  } finally {
+    await dispose();
+  }
+});
+
+test("speech pipeline plays sentences in order while synthesising ahead, and can be cancelled", async () => {
+  const { module, dispose } = await loadModule("speech-pipeline.ts");
+  try {
+    const played = [];
+    const started = [];
+    let active = 0, peak = 0;
+    const contexts = [];
+    const pipeline = new module.SpeechPipeline({
+      synthesize: async (text, context) => {
+        contexts.push(context.previousText);
+        active += 1; peak = Math.max(peak, active);
+        // Later sentences finish synthesis first, playback must still be in order.
+        await new Promise((resolve) => setTimeout(resolve, text.startsWith("Um") ? 40 : 5));
+        active -= 1;
+        return wavOf(100);
+      },
+      play: async (wav, onStart) => { onStart(); played.push(wav.length); await new Promise((resolve) => setTimeout(resolve, 5)); },
+      onSentenceStart: (sentence) => started.push([sentence.index, sentence.text, sentence.words, sentence.durationMs]),
+    });
+    pipeline.push("Um primeiro bloco aqui. Dois segundo bloco ali. Três terceiro bloco");
+    pipeline.push(" final.");
+    await pipeline.end();
+    assert.deepEqual(started.map(([index, text]) => [index, text]), [[0, "Um primeiro bloco aqui."], [1, "Dois segundo bloco ali."], [2, "Três terceiro bloco final."]]);
+    assert.deepEqual(started.map((entry) => entry[2]), [4, 4, 4]);
+    assert.equal(started[0][3], 200, "duration comes from the WAV header and sample count");
+    assert.ok(peak <= 2, `peak concurrency ${peak}`);
+    assert.deepEqual(contexts, ["", "Um primeiro bloco aqui.", "Um primeiro bloco aqui. Dois segundo bloco ali."]);
+
+    const cancelled = new module.SpeechPipeline({ synthesize: async () => wavOf(10), play: async () => { throw new Error("must not play"); } });
+    cancelled.push("Isto nunca deve tocar. Nem isto.");
+    cancelled.cancel();
+    await cancelled.end();
+
+    const failing = new module.SpeechPipeline({ synthesize: async () => { throw new Error("tts down"); }, play: async () => {} });
+    failing.push("Uma frase completa aqui.");
+    await assert.rejects(failing.end(), /tts down/);
+  } finally {
+    await dispose();
+  }
+});
+
+test("assistant streams Grok deltas, including text spoken before a tool call", async () => {
+  const { module, dispose } = await loadModule("assistant.ts");
+  try {
+    const rounds = [
+      { deltas: ["Vou abrir. "], completion: { content: "Vou abrir. ", toolCalls: [{ id: "c1", type: "function", function: { name: "get_time", arguments: "" } }] } },
+      { deltas: ["São ", "9h30."], completion: { content: "São 9h30.", toolCalls: [] } },
+    ];
+    const grok = {
+      complete: async () => { throw new Error("streaming client must be used"); },
+      stream: async (_messages, _tools, options) => {
+        const round = rounds.shift();
+        for (const delta of round.deltas) options.onText(delta);
+        return round.completion;
+      },
+    };
+    const { context } = actionContext();
+    const assistant = new module.VoiceAssistant({ grok, profile: { persona: "", capabilities: "", routines: [] }, actions: context, language: "pt", historyLimit: 20 });
+    const deltas = [];
+    const reply = await assistant.handle("diz-me uma coisa e as horas", { onText: (delta) => deltas.push(delta) });
+    assert.deepEqual(deltas, ["Vou abrir. ", "São ", "9h30."]);
+    assert.deepEqual(reply, { text: "Vou abrir. São 9h30.", source: "grok" });
+    assert.equal(assistant.history.at(-1).content, "Vou abrir. São 9h30.");
+
+    const local = [];
+    await assistant.handle("abre o Safari", { onText: (delta) => local.push(delta) });
+    assert.deepEqual(local, ["Opened Safari."]);
+  } finally {
+    await dispose();
+  }
+});
+
+test("desktop controller starts speaking before Grok finishes and aborts the stream on interrupt", async () => {
+  const { module, dispose } = await loadModule("desktop-controller.ts");
+  try {
+    let finishGrok;
+    let aborted = false;
+    const harness = desktopHarness({
+      createRuntime: async () => ({
+        profile: { persona: "", capabilities: "", routines: [] },
+        voice: { transcribe: async () => "conta-me tudo", synthesize: async () => wavOf(400) },
+        runRoutine: async () => "",
+        assistant: {
+          handle: (_text, options) => new Promise((resolve, reject) => {
+            options.onText("Primeira frase completa. ");
+            options.onText("Segunda ainda a");
+            options.signal.addEventListener("abort", () => { aborted = true; reject(new Error("aborted")); });
+            finishGrok = () => { options.onText(" chegar."); resolve({ text: "", source: "grok" }); };
+          }),
+        },
+      }),
+    });
+    const { assistant } = await module.startDesktopVoiceAssistant(harness.deps);
+    await assistant.toggle();
+    void assistant.toggle();
+    await waitFor(() => assistant.state === "speaking");
+    assert.ok(finishGrok, "Grok is still streaming while the first sentence plays");
+
+    await assistant.toggle();
+    assert.equal(aborted, true, "the Grok request is aborted");
+    assert.equal(assistant.state, "listening");
+    assert.ok(!harness.events.some((event) => event[0] === "failure"), "an interrupt is not reported as a failure");
+    assistant.dispose();
+  } finally {
+    await dispose();
+  }
+});
+
+test("an interrupt during transcription never reaches Grok", async () => {
+  const { module, dispose } = await loadModule("desktop-controller.ts");
+  try {
+    let releaseTranscript;
+    let handled = 0;
+    const harness = desktopHarness({
+      createRuntime: async () => ({
+        profile: { persona: "", capabilities: "", routines: [] },
+        voice: { transcribe: () => new Promise((resolve) => { releaseTranscript = () => resolve("abre o Spotify"); }), synthesize: async () => wavOf(10) },
+        runRoutine: async () => "",
+        assistant: { handle: async () => { handled += 1; return { text: "", source: "local" }; } },
+      }),
+    });
+    const { assistant } = await module.startDesktopVoiceAssistant(harness.deps);
+    await assistant.toggle();
+    const first = assistant.toggle();
+    await waitFor(() => releaseTranscript !== undefined);
+    await assistant.toggle();
+    releaseTranscript();
+    await first;
+    assert.equal(handled, 0);
+    assert.equal(assistant.state, "listening");
+    assistant.dispose();
   } finally {
     await dispose();
   }

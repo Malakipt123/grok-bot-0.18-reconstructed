@@ -101,8 +101,9 @@ authoritative provider invoice.
 ### Jarvis voice assistant
 
 Press **Option+Space** anywhere to talk to Jarvis, even when the app is in
-the background. A floating HUD shows an animated arc-reactor ring and a live
-waveform. `npm run voice` runs the same assistant in a terminal. It uses ElevenLabs
+the background. A floating HUD shows an animated arc-reactor ring, a live
+waveform, and the reply streaming in word by word while Jarvis speaks it
+sentence by sentence. `npm run voice` runs the same assistant in a terminal. It uses ElevenLabs
 Scribe for speech-to-text, Grok (xAI) for reasoning and tool calls, and
 ElevenLabs `eleven_v3` for speech. Simple commands such as opening apps,
 setting the volume, telling the time or taking notes run locally without an

@@ -1,12 +1,16 @@
 import { stripAudioTags } from "./assistant.js";
 import { AudioPlayer, pcmEnvelope, pcmFromWav, startRecording as startSystemRecording, type Recording, type RecordingOptions } from "./audio.js";
+import { AudioTagFilter, SpeechPipeline, type SpokenSentence } from "./speech-pipeline.js";
 import { loadVoiceAssistantConfig, type VoiceAssistantConfig } from "./config.js";
 import { createVoiceAssistantRuntime, type VoiceAssistantRuntime } from "./runtime.js";
 import { RoutineScheduler } from "./scheduler.js";
 
 // Global push-to-talk for the desktop app. Electron's globalShortcut only
 // reports key-down, so the shortcut toggles: press to listen, press again to
-// send. Pressing while Jarvis speaks interrupts it and starts listening.
+// send. Pressing while Jarvis thinks or speaks interrupts it and starts listening.
+//
+// Replies stream: Grok's tokens go to the HUD word by word as they arrive, and
+// each finished sentence is synthesised and played while the next is written.
 
 export const DEFAULT_VOICE_SHORTCUT = "Alt+Space";
 export const VOICE_SECRET_KEYS = ["XAI_API_KEY", "ELEVENLABS_API_KEY"] as const;
@@ -18,7 +22,12 @@ export type DesktopVoiceState = "idle" | "listening" | "thinking" | "speaking";
 export type DesktopVoiceHudEvent =
   | { readonly type: "state"; readonly state: DesktopVoiceState }
   | { readonly type: "level"; readonly level: number }
-  | { readonly type: "text"; readonly speaker: "you" | "jarvis"; readonly text: string };
+  | { readonly type: "text"; readonly speaker: "you" | "jarvis"; readonly text: string }
+  /** A new Jarvis reply begins; following deltas append to it. */
+  | { readonly type: "reply-start" }
+  | { readonly type: "reply-delta"; readonly text: string }
+  /** How many words of the current reply have been spoken so far. */
+  | { readonly type: "spoken"; readonly words: number };
 
 export interface DesktopVoiceHudPort {
   update(event: DesktopVoiceHudEvent): void;
@@ -26,6 +35,8 @@ export interface DesktopVoiceHudPort {
 }
 
 const ENVELOPE_WINDOW_MS = 50;
+const SPOKEN_TICK_MS = 60;
+const ALL_WORDS = 1_000_000;
 
 export interface DesktopVoiceShortcutPort {
   register(accelerator: string, callback: () => void): boolean;
@@ -105,40 +116,118 @@ export async function startDesktopVoiceAssistant(deps: DesktopVoiceDeps): Promis
     deps.onStateChange?.(next);
     hud?.update({ type: "state", state: next });
   };
-  const showText = (speaker: "you" | "jarvis", text: string) => {
-    if (hud) hud.update({ type: "text", speaker, text });
-    else if (speaker === "jarvis") deps.notify("Jarvis", text);
-  };
+
   const fail = (leg: string, error: unknown) => {
     deps.reportFailure(leg, error);
     deps.notify("Jarvis", error instanceof Error ? error.message : String(error));
     setState("idle");
   };
 
-  const speak = async (text: string, turn: number) => {
-    if (!text) return;
-    showText("jarvis", stripAudioTags(text));
-    const audio = await runtime.voice.synthesize(text);
-    if (turn !== generation || disposed) return;
-    setState("speaking");
-    const decoded = hud ? pcmFromWav(audio) : null;
+  let spokenTimer: NodeJS.Timeout | null = null;
+  const stopSpoken = () => {
+    if (spokenTimer) clearInterval(spokenTimer);
+    spokenTimer = null;
+  };
+  let pipeline: SpeechPipeline | null = null;
+  let abort: AbortController | null = null;
+
+  const startEnvelope = (wav: Uint8Array, turn: number) => {
+    const decoded = hud ? pcmFromWav(wav) : null;
     const envelope = decoded ? pcmEnvelope(decoded.pcm, decoded.sampleRate, ENVELOPE_WINDOW_MS) : [];
-    await player.play(audio, () => {
-      if (envelope.length === 0 || turn !== generation) return;
-      const startedAt = Date.now();
-      stopEnvelope();
-      envelopeTimer = setInterval(() => {
-        const level = envelope[Math.floor((Date.now() - startedAt) / ENVELOPE_WINDOW_MS)];
-        if (level === undefined) return stopEnvelope();
-        hud?.update({ type: "level", level });
-      }, ENVELOPE_WINDOW_MS);
+    stopEnvelope();
+    if (envelope.length === 0) return;
+    const startedAt = Date.now();
+    envelopeTimer = setInterval(() => {
+      const level = envelope[Math.floor((Date.now() - startedAt) / ENVELOPE_WINDOW_MS)];
+      if (level === undefined || turn !== generation) return stopEnvelope();
+      hud?.update({ type: "level", level });
+    }, ENVELOPE_WINDOW_MS);
+  };
+
+  // Words light up evenly across each sentence's audio, which tracks speech closely enough for captions.
+  const startSpoken = (wordsBefore: number, sentence: SpokenSentence, turn: number) => {
+    stopSpoken();
+    if (!hud) return;
+    const startedAt = Date.now();
+    let last = -1;
+    const tick = () => {
+      const fraction = sentence.durationMs > 0 ? Math.min(1, (Date.now() - startedAt) / sentence.durationMs) : 1;
+      const words = wordsBefore + Math.min(sentence.words, Math.ceil(fraction * sentence.words));
+      if (turn !== generation) return stopSpoken();
+      if (words !== last) hud.update({ type: "spoken", words });
+      last = words;
+      if (fraction >= 1) stopSpoken();
+    };
+    tick();
+    spokenTimer = setInterval(tick, SPOKEN_TICK_MS);
+  };
+
+  /**
+   * Streams one reply: `produce` feeds text deltas and resolves with the full
+   * text, or null when the user said "stop". Speech starts with the first sentence.
+   */
+  const reply = async (turn: number, produce: (onText: (delta: string) => void, signal: AbortSignal) => Promise<string | null>) => {
+    const controller = new AbortController();
+    abort = controller;
+    let wordsBefore = 0;
+    const speech = new SpeechPipeline({
+      synthesize: (text, context) => runtime.voice.synthesize(text, { previousText: context.previousText, signal: controller.signal }),
+      play: (wav, onStart) => player.play(wav, onStart),
+      onSentenceStart: (sentence) => {
+        if (turn !== generation) return;
+        if (state !== "speaking") setState("speaking");
+        startEnvelope(sentence.wav, turn);
+        startSpoken(wordsBefore, sentence, turn);
+        wordsBefore += sentence.words;
+      },
     });
-    if (turn === generation && state === "speaking") setState("idle");
+    pipeline = speech;
+    const filter = new AudioTagFilter();
+    let started = false;
+    let display = "";
+    const showDelta = (visible: string) => {
+      if (!visible || turn !== generation) return;
+      if (!started) {
+        started = true;
+        hud?.update({ type: "reply-start" });
+      }
+      display += visible;
+      hud?.update({ type: "reply-delta", text: visible });
+    };
+    try {
+      const text = await produce((delta) => {
+        if (turn !== generation) return;
+        speech.push(delta);
+        showDelta(filter.push(delta));
+      }, controller.signal);
+      if (text === null || turn !== generation) {
+        speech.cancel();
+        return;
+      }
+      showDelta(filter.flush());
+      if (!hud && display.trim()) deps.notify("Jarvis", display.trim());
+      await speech.end();
+      if (turn === generation) hud?.update({ type: "spoken", words: ALL_WORDS });
+    } finally {
+      stopSpoken();
+      if (pipeline === speech) pipeline = null;
+      if (abort === controller) abort = null;
+    }
+    if (turn === generation && state !== "idle" && state !== "listening") setState("idle");
+  };
+
+  const interrupt = () => {
+    abort?.abort();
+    abort = null;
+    pipeline?.cancel();
+    pipeline = null;
+    stopSpoken();
+    player.stop();
   };
 
   const startListening = async () => {
-    player.stop();
     const turn = ++generation;
+    interrupt();
     if (!microphoneGranted) {
       microphoneGranted = await deps.requestMicrophoneAccess();
       if (!microphoneGranted) {
@@ -170,13 +259,15 @@ export async function startDesktopVoiceAssistant(deps: DesktopVoiceDeps): Promis
       const audio = await current.stop();
       if (audio.length < MIN_SPEECH_BYTES) return setState("idle");
       const transcript = await runtime.voice.transcribe(audio);
-      if (!transcript) return setState("idle");
-      showText("you", transcript);
-      const reply = await runtime.assistant.handle(transcript);
+      // An interrupt during transcription must not still reach Grok (or run its actions).
       if (turn !== generation) return;
-      // Stay in "thinking" until speech is ready so the HUD does not flicker.
-      if (reply.source === "stop" || !reply.text) setState("idle");
-      else await speak(reply.text, turn);
+      if (!transcript) return setState("idle");
+      hud?.update({ type: "text", speaker: "you", text: transcript });
+      // Stays in "thinking" until the first sentence plays, so the HUD does not flicker.
+      await reply(turn, async (onText, signal) => {
+        const answer = await runtime.assistant.handle(transcript, { onText, signal });
+        return answer.source === "stop" ? null : answer.text;
+      });
     } catch (error) {
       if (turn === generation) fail("turn", error);
     }
@@ -191,8 +282,7 @@ export async function startDesktopVoiceAssistant(deps: DesktopVoiceDeps): Promis
       if (disposed) return;
       try {
         if (state === "listening") await finishListening();
-        else if (state === "idle" || state === "speaking") await startListening();
-        // While thinking, presses are ignored rather than queued.
+        else await startListening();
       } catch (error) {
         fail("toggle", error);
       }
@@ -206,8 +296,8 @@ export async function startDesktopVoiceAssistant(deps: DesktopVoiceDeps): Promis
       if (recordingTimer) clearTimeout(recordingTimer);
       void recording?.stop().catch(() => undefined);
       recording = null;
+      interrupt();
       stopEnvelope();
-      player.stop();
       hud?.dispose();
     },
   };
@@ -221,7 +311,12 @@ export async function startDesktopVoiceAssistant(deps: DesktopVoiceDeps): Promis
     routines: runtime.profile.routines,
     run: async (routine) => {
       const report = await runtime.runRoutine(routine);
-      if (state === "idle") await speak(report, generation);
+      if (state === "idle") {
+        await reply(generation, async (onText) => {
+          onText(report);
+          return report;
+        });
+      }
       else if (hud) hud.update({ type: "text", speaker: "jarvis", text: stripAudioTags(report) });
       else deps.notify(`Jarvis · ${routine.name}`, stripAudioTags(report));
     },

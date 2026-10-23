@@ -9,8 +9,15 @@ export interface AssistantReply {
   readonly source: "local" | "grok" | "stop";
 }
 
+export interface HandleOptions {
+  readonly signal?: AbortSignal;
+  /** Receives the reply as it is generated: token deltas from Grok, or the whole local answer at once. */
+  readonly onText?: (delta: string) => void;
+}
+
 export interface VoiceAssistantOptions {
-  readonly grok: Pick<GrokClient, "complete">;
+  /** `stream` is used when present so replies can be spoken before Grok finishes. */
+  readonly grok: Pick<GrokClient, "complete"> & Partial<Pick<GrokClient, "stream">>;
   readonly profile: AssistantProfile;
   readonly actions: ActionContext;
   readonly language: string;
@@ -30,34 +37,47 @@ export class VoiceAssistant {
     return this.#history;
   }
 
-  async handle(transcript: string, signal?: AbortSignal): Promise<AssistantReply> {
+  async handle(transcript: string, options: HandleOptions = {}): Promise<AssistantReply> {
     const intent = routeIntent(transcript);
     if (intent.kind === "stop") return { text: "", source: "stop" };
     if (intent.kind === "action") {
       try {
-        return { text: await executeAction(intent.action, intent.args, this.#options.actions), source: "local" };
+        const text = await executeAction(intent.action, intent.args, this.#options.actions);
+        options.onText?.(text);
+        return { text, source: "local" };
       } catch {
         // A local guess that fails (e.g. an unknown app) gets a second chance with Grok.
       }
     }
     const turn: GrokMessage[] = [...this.#history, { role: "user", content: transcript }];
-    const text = await this.#runToolLoop(turn, signal);
+    const text = await this.#runToolLoop(turn, options);
     this.#history = trimHistory([...turn, { role: "assistant", content: text }], this.#options.historyLimit);
     return { text, source: "grok" };
   }
 
   /** Runs a scheduled routine in a fresh context so it does not pollute the conversation. */
   async runRoutine(name: string, signal?: AbortSignal): Promise<string> {
-    return this.#runToolLoop([{ role: "user", content: `Run your scheduled routine now: ${name}. Report the result as a short spoken briefing.` }], signal);
+    return this.#runToolLoop([{ role: "user", content: `Run your scheduled routine now: ${name}. Report the result as a short spoken briefing.` }], signal ? { signal } : {});
   }
 
-  async #runToolLoop(conversation: GrokMessage[], signal?: AbortSignal): Promise<string> {
+  async #runToolLoop(conversation: GrokMessage[], options: HandleOptions): Promise<string> {
     const messages: GrokMessage[] = [{ role: "system", content: this.#systemPrompt() }, ...conversation];
     const rounds = this.#options.maxToolRounds ?? 4;
+    const { grok } = this.#options;
+    // Text spoken before a tool call ("Opening it now…") stays part of the reply.
+    let spoken = "";
+    const onText = (delta: string) => {
+      spoken += delta;
+      options.onText?.(delta);
+    };
     for (let round = 0; round <= rounds; round += 1) {
       const tools = round < rounds ? ACTION_TOOLS : [];
-      const completion = await this.#options.grok.complete(messages, tools, signal);
-      if (completion.toolCalls.length === 0) return (completion.content ?? "").trim();
+      const streaming = Boolean(grok.stream && options.onText);
+      const completion = streaming
+        ? await grok.stream!(messages, tools, { onText, ...(options.signal ? { signal: options.signal } : {}) })
+        : await grok.complete(messages, tools, options.signal);
+      if (!streaming && options.onText && completion.content) onText(completion.content);
+      if (completion.toolCalls.length === 0) return (options.onText ? spoken : completion.content ?? "").trim();
       messages.push({ role: "assistant", content: completion.content, tool_calls: completion.toolCalls });
       for (const call of completion.toolCalls) {
         messages.push({ role: "tool", tool_call_id: call.id, content: await this.#runToolCall(call.function.name, call.function.arguments) });

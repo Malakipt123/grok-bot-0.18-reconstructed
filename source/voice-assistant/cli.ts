@@ -1,10 +1,10 @@
 import readline from "node:readline";
 
-import { stripAudioTags } from "./assistant.js";
 import { AudioPlayer, startRecording, type Recording } from "./audio.js";
 import { loadVoiceAssistantConfig, VoiceAssistantConfigError } from "./config.js";
 import { createVoiceAssistantRuntime } from "./runtime.js";
 import { RoutineScheduler } from "./scheduler.js";
+import { AudioTagFilter, SpeechPipeline } from "./speech-pipeline.js";
 
 const HELP = `Press Enter to start talking and Enter again to stop, or type a message.
 Commands: /mute  /routines  /run <routine>  /help  /quit`;
@@ -33,29 +33,65 @@ async function main(): Promise<void> {
   let muted = process.argv.includes("--mute") || !player.available;
   if (!player.available) console.log("No audio player found; replies will be text only.");
 
-  const speak = async (text: string) => {
-    const display = stripAudioTags(text);
-    if (display) console.log(`\nJarvis: ${display}\n`);
-    if (muted || !text) return;
+  let speech: SpeechPipeline | null = null;
+  const stopSpeaking = () => {
+    speech?.cancel();
+    speech = null;
+    player.stop();
+  };
+
+  /** Prints the reply as it streams and speaks it sentence by sentence; playback never blocks input. */
+  const streamReply = async (produce: (onText: (delta: string) => void) => Promise<string | null>) => {
+    stopSpeaking();
+    const pipe = muted
+      ? null
+      : new SpeechPipeline({
+        synthesize: (text, context) => voice.synthesize(text, { previousText: context.previousText }),
+        play: (wav, onStart) => player.play(wav, onStart),
+      });
+    speech = pipe;
+    const filter = new AudioTagFilter();
+    let started = false;
+    const write = (delta: string) => {
+      const visible = started ? delta : delta.trimStart();
+      if (!visible) return;
+      if (!started) {
+        started = true;
+        process.stdout.write("\nJarvis: ");
+      }
+      process.stdout.write(visible);
+    };
+    let text: string | null;
     try {
-      await player.play(await voice.synthesize(text));
-    } catch (error) {
-      console.error(`Voice error: ${errorMessage(error)}`);
+      text = await produce((delta) => {
+        pipe?.push(delta);
+        write(filter.push(delta));
+      });
+    } finally {
+      write(filter.flush());
+      if (started) process.stdout.write("\n\n");
     }
+    if (text === null) return stopSpeaking();
+    void pipe?.end().catch((error) => console.error(`Voice error: ${errorMessage(error)}`));
   };
 
   const respond = async (transcript: string) => {
     try {
-      const reply = await assistant.handle(transcript);
-      if (reply.source === "stop") player.stop();
-      else void speak(reply.text);
+      await streamReply(async (onText) => {
+        const reply = await assistant.handle(transcript, { onText });
+        return reply.source === "stop" ? null : reply.text;
+      });
     } catch (error) {
       console.error(`Error: ${errorMessage(error)}`);
     }
   };
 
   const runRoutine = async (name: string, logFile: string) => {
-    void speak(await runtime.runRoutine({ name, logFile }));
+    const report = await runtime.runRoutine({ name, logFile });
+    await streamReply(async (onText) => {
+      onText(report);
+      return report;
+    });
   };
 
   const scheduler = new RoutineScheduler({
@@ -85,7 +121,7 @@ async function main(): Promise<void> {
         console.error(`Transcription error: ${errorMessage(error)}`);
       }
     } else if (!text) {
-      player.stop();
+      stopSpeaking();
       try {
         recording = await startRecording();
         console.log("Listening… press Enter to stop.");
@@ -100,7 +136,7 @@ async function main(): Promise<void> {
       console.log(HELP);
     } else if (text === "/mute") {
       muted = !muted;
-      if (muted) player.stop();
+      if (muted) stopSpeaking();
       console.log(muted ? "Voice off." : "Voice on.");
     } else if (text === "/routines") {
       console.log(profile.routines.map((routine) => `${routine.time}  ${routine.name} → ${routine.logFile}`).join("\n") || "No routines configured.");
@@ -121,7 +157,7 @@ async function main(): Promise<void> {
     closing = true;
     await queue;
     scheduler.stop();
-    player.stop();
+    stopSpeaking();
     process.exit(0);
   });
 }

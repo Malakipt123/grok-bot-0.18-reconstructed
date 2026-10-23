@@ -55,14 +55,21 @@ Then:
 
 - Press **Option+Space** to start listening (you hear a *Tink*). Press it again
   to send (*Pop*). Recording stops on its own after 30 seconds.
+- Replies **stream**. Grok's tokens appear in the HUD word by word as they
+  arrive, and each finished sentence is sent to ElevenLabs while Grok is still
+  writing the next one. Jarvis starts talking after the first sentence instead
+  of waiting for the whole answer. Words light up as they are spoken:
+
+  ![Streaming reply: spoken words bright, upcoming words dimmed](../../docs/assets/jarvis-hud-streaming.png)
 - A floating **HUD** appears at the top of the screen with an arc-reactor ring
   and a live waveform. While you speak it follows your microphone; while
   Jarvis answers it follows the reply audio. The ring turns amber while Grok
   thinks, and the HUD shows what you said and what Jarvis answers. It never
   takes focus and lets clicks pass through. It fades out a few seconds after
   Jarvis finishes. `JARVIS_HUD=off` falls back to OS notifications.
-- Pressing Option+Space while Jarvis is talking interrupts it and starts
-  listening again.
+- Pressing Option+Space while Jarvis is thinking or talking interrupts it:
+  the Grok stream is aborted, queued speech is dropped, and it starts listening
+  again.
 - Routines from `ASSISTANT.md` run in the background and are spoken when the
   assistant is idle.
 - The first time, macOS asks for microphone permission. The packaged app
@@ -84,6 +91,16 @@ Source:
   sandboxed with no Node access, under a CSP that blocks all network access.
   It only receives JSON events.
 
+Streaming (`speech-pipeline.ts`): `SentenceChunker` cuts the token stream at
+sentence ends. It ignores numbers like `9.30` and merges very short fragments,
+and it may cut the first sentence at a comma so the voice starts sooner.
+`AudioTagFilter` hides `[laughs]`-style tags from the text even when a tag is
+split across deltas; ElevenLabs still receives them. `SpeechPipeline` runs at
+most two TTS requests at a time and plays sentences strictly in order. For
+models that support it, it passes the earlier text as `previous_text` so
+intonation carries across sentences. Highlighted words are spread evenly over
+each sentence's audio duration.
+
 Recording streams raw PCM from sox/ffmpeg into Node, and ElevenLabs returns
 raw PCM (`pcm_22050`). The waveform is computed from the same audio you hear,
 with no MP3 decoder or native module.
@@ -98,7 +115,7 @@ npm run voice
 ```
 
 Press **Enter** to start talking and **Enter** again to stop. You can also type
-a message. Commands: `/mute`, `/routines`, `/run <routine>`, `/help`, `/quit`.
+a message. Replies print as they stream and are spoken sentence by sentence. Commands: `/mute`, `/routines`, `/run <routine>`, `/help`, `/quit`.
 Pass `--mute` for text-only replies.
 
 | Variable | Default |

@@ -28,7 +28,10 @@ const HIDE_AFTER_IDLE_MS = 2_500;
 const HIDE_AFTER_TEXT_MS = 7_000;
 const LEVEL_FLUSH_MS = 33;
 
-type PageEvent = { type: "state"; state: string } | { type: "text"; speaker: string; text: string } | { type: "levels"; levels: number[] } | { type: "hide" };
+type PageEvent =
+  | Exclude<DesktopVoiceHudEvent, { type: "level" }>
+  | { type: "levels"; levels: number[] }
+  | { type: "hide" };
 
 /**
  * Floating, click-through, always-on-top HUD. The window exists only while it
@@ -71,9 +74,14 @@ export class JarvisHudWindow implements DesktopVoiceHudPort {
       this.#send({ type: "state", state: event.state });
       return;
     }
+    if (event.type === "spoken") {
+      this.#send(event);
+      return;
+    }
+    // Text can arrive while idle (a scheduled routine); then the HUD shows it briefly on its own.
     const idle = !this.#window;
     this.#ensureWindow();
-    this.#send({ type: "text", speaker: event.speaker, text: event.text });
+    this.#send(event);
     if (idle) this.#scheduleHide(HIDE_AFTER_TEXT_MS);
   }
 
