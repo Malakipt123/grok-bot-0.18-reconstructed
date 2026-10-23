@@ -22,6 +22,8 @@ export interface VoiceAssistantConfig {
   readonly googleClientSecret: string | null;
   /** IANA zone for calendar times; defaults to the system zone. */
   readonly timeZone: string;
+  /** Minutes before a calendar event to announce it; null turns reminders off. */
+  readonly reminderMinutes: number | null;
 }
 
 export class VoiceAssistantConfigError extends Error {
@@ -42,6 +44,8 @@ export function loadVoiceAssistantConfig(env: NodeJS.ProcessEnv = process.env): 
   }
   const historyLimit = Number.parseInt(env.JARVIS_HISTORY_LIMIT ?? "", 10);
   const conversationTtlHours = Number.parseFloat(env.JARVIS_CONVERSATION_TTL_HOURS ?? "");
+  const reminderSetting = env.JARVIS_REMINDER_MINUTES?.trim().toLowerCase();
+  const reminderMinutes = reminderSetting === undefined || reminderSetting === "" ? 10 : Number.parseInt(reminderSetting, 10);
   return {
     xaiApiKey: env.XAI_API_KEY!.trim(),
     xaiBaseUrl: trimSlash(env.XAI_BASE_URL || "https://api.x.ai/v1"),
@@ -59,6 +63,8 @@ export function loadVoiceAssistantConfig(env: NodeJS.ProcessEnv = process.env): 
     googleClientId: env.GOOGLE_CLIENT_ID?.trim() || null,
     googleClientSecret: env.GOOGLE_CLIENT_SECRET?.trim() || null,
     timeZone: validTimeZone(env.JARVIS_TIMEZONE?.trim()) ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
+    // "off", 0 or anything unparsable disables reminders; a lead over two hours is clamped.
+    reminderMinutes: Number.isFinite(reminderMinutes) && reminderMinutes > 0 ? Math.min(reminderMinutes, 120) : null,
   };
 }
 

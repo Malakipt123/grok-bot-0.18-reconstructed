@@ -1238,3 +1238,167 @@ test("assistant offers toolkit tools, routes their calls, and handles 'liga o ca
     await dispose();
   }
 });
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test("reminder text reads naturally in Portuguese and English", async () => {
+  const { module, dispose } = await loadModule("reminders.ts");
+  try {
+    const event = { id: "a", summary: "Reunião com a Ana", start: "", end: "", allDay: false, location: "Lisboa" };
+    assert.equal(module.reminderText(event, 10, "pt"), "Daqui a 10 minutos tens Reunião com a Ana, em Lisboa.");
+    assert.equal(module.reminderText({ ...event, location: null }, 1, "pt-PT"), "Daqui a 1 minuto tens Reunião com a Ana.");
+    assert.equal(module.reminderText(event, 0, "pt"), "Está a começar agora: Reunião com a Ana, em Lisboa.");
+    assert.equal(module.reminderText({ ...event, summary: "Standup", location: null }, 5, "en"), "In 5 minutes you have Standup.");
+  } finally {
+    await dispose();
+  }
+});
+
+test("event reminders fire once at start − lead, follow moved and cancelled events, and skip all-day ones", async () => {
+  const { module, dispose } = await loadModule("reminders.ts");
+  try {
+    const leadMinutes = 0.002; // 120 ms, so the test runs on real timers
+    const at = (ms) => new Date(Date.now() + ms).toISOString();
+    let events = [];
+    let connected = true;
+    let listCalls = 0;
+    const fired = [];
+    const reminders = new module.EventReminders({
+      leadMinutes, language: "pt", pollMs: 60_000,
+      isConnected: async () => connected,
+      listEvents: async () => { listCalls += 1; return events; },
+      announce: (reminder) => fired.push([reminder.event.id, reminder.minutes, reminder.text]),
+    });
+    events = [
+      { id: "soon", summary: "Dentista", start: at(200), end: at(3_600_000), allDay: false, location: null },
+      { id: "now", summary: "Chamada", start: at(60), end: at(3_600_000), allDay: false, location: null },
+      { id: "allday", summary: "Feriado", start: "2026-10-24", end: "2026-10-25", allDay: true, location: null },
+      { id: "past", summary: "Já foi", start: at(-60_000), end: at(-1), allDay: false, location: null },
+      { id: "moved", summary: "Café", start: at(150), end: at(3_600_000), allDay: false, location: null },
+      { id: "cancelled", summary: "Cancelado", start: at(180), end: at(3_600_000), allDay: false, location: null },
+    ];
+    await reminders.poll();
+    await reminders.poll(); // a second poll must not double-schedule
+    await sleep(15); // immediate reminders still go through a 0 ms timer
+    assert.deepEqual(fired.map(([id]) => id), ["now"], "an event already inside the lead window is announced right away");
+
+    // The organiser moves "moved" 400 ms later and cancels "cancelled".
+    events = events.filter((event) => event.id !== "cancelled").map((event) => (event.id === "moved" ? { ...event, start: at(400) } : event));
+    await reminders.poll();
+    await sleep(450);
+    assert.deepEqual(fired.map(([id]) => id).sort(), ["moved", "now", "soon"]);
+    assert.equal(fired.filter(([id]) => id === "moved").length, 1, "the moved event is announced once, at its new time");
+    assert.ok(fired.every(([, minutes]) => minutes === 0), "sub-minute leads round to 'starting now'");
+    assert.match(fired.find(([id]) => id === "soon")[2], /Dentista/);
+
+    connected = false;
+    const callsBefore = listCalls;
+    await reminders.poll();
+    assert.equal(listCalls, callsBefore, "no Calendar request while disconnected");
+    reminders.stop();
+  } finally {
+    await dispose();
+  }
+});
+
+test("event reminders report a failing calendar once per outage, and stop() cancels pending timers", async () => {
+  const { module, dispose } = await loadModule("reminders.ts");
+  try {
+    const errors = [];
+    let failing = true;
+    const fired = [];
+    const reminders = new module.EventReminders({
+      leadMinutes: 0.001, language: "en", pollMs: 60_000,
+      isConnected: async () => true,
+      listEvents: async () => {
+        if (failing) throw new Error("offline");
+        return [{ id: "x", summary: "Later", start: new Date(Date.now() + 200).toISOString(), end: "", allDay: false, location: null }];
+      },
+      announce: (reminder) => fired.push(reminder.event.id),
+      onError: (error) => errors.push(error.message),
+    });
+    await reminders.poll();
+    await reminders.poll();
+    assert.deepEqual(errors, ["offline"]);
+    failing = false;
+    await reminders.poll();
+    failing = true;
+    await reminders.poll();
+    assert.deepEqual(errors, ["offline", "offline"], "a new outage after a success is reported again");
+    failing = false;
+    await reminders.poll();
+    reminders.stop();
+    await sleep(250);
+    assert.deepEqual(fired, [], "stopped reminders never fire");
+  } finally {
+    await dispose();
+  }
+});
+
+test("desktop announcements speak when idle, wait during a conversation, never overlap, and expire to a notification", async () => {
+  const { module, dispose } = await loadModule("desktop-controller.ts");
+  try {
+    let announceReminder;
+    let playing = 0, overlap = false;
+    const spoken = [];
+    const harness = desktopHarness({
+      player: {
+        play: async (wav, onStart) => {
+          playing += 1;
+          if (playing > 1) overlap = true;
+          onStart?.();
+          await sleep(30);
+          playing -= 1;
+        },
+        stop: () => {},
+      },
+      createRuntime: async () => ({
+        profile: { persona: "", capabilities: "", routines: [] },
+        runRoutine: async () => "",
+        voice: { transcribe: async () => "olá", synthesize: async (text) => { spoken.push(text); await sleep(20); return wavOf(50); } },
+        assistant: { handle: async (_text, options) => { options.onText("Olá a ti."); return { text: "Olá a ti.", source: "grok" }; } },
+        startReminders: (announce) => { announceReminder = announce; return { stop() {} }; },
+      }),
+    });
+    const { assistant } = await module.startDesktopVoiceAssistant(harness.deps);
+    const reminder = (id, text, startsInMs) => ({ event: { id, summary: id, start: new Date(Date.now() + startsInMs).toISOString(), end: "", allDay: false, location: null }, minutes: 10, text });
+
+    // Two reminders at once: spoken one after the other.
+    announceReminder(reminder("a", "Daqui a 10 minutos tens Alfa.", 600_000));
+    announceReminder(reminder("b", "Daqui a 10 minutos tens Beta.", 600_000));
+    await waitFor(() => spoken.length === 2 && assistant.state === "idle" && playing === 0);
+    assert.deepEqual(spoken, ["Daqui a 10 minutos tens Alfa.", "Daqui a 10 minutos tens Beta."]);
+    assert.equal(overlap, false, "announcements never talk over each other");
+
+    // While the user is talking to Jarvis, a reminder waits for the conversation to end.
+    await assistant.toggle();
+    assert.equal(assistant.state, "listening");
+    announceReminder(reminder("c", "Daqui a 5 minutos tens Gama.", 600_000));
+    announceReminder(reminder("d", "Já devia ter sido dito.", 50));
+    await sleep(80);
+    assert.equal(spoken.length, 2, "nothing is spoken over the user");
+    await assistant.toggle();
+    const notified = () => harness.events.some((event) => event[0] === "notify" && event[1] === "Já devia ter sido dito.");
+    await waitFor(() => spoken.includes("Daqui a 5 minutos tens Gama.") && notified() && assistant.state === "idle" && playing === 0, 3_000);
+    assert.deepEqual(spoken.slice(2), ["Olá a ti.", "Daqui a 5 minutos tens Gama."]);
+    assert.ok(harness.events.some((event) => event[0] === "notify" && event[1] === "Já devia ter sido dito."), "an expired reminder becomes a notification");
+    assert.equal(overlap, false);
+    assistant.dispose();
+  } finally {
+    await dispose();
+  }
+});
+
+test("reminder lead time defaults to 10 minutes, can be changed, clamped or turned off", async () => {
+  const { module, dispose } = await loadModule("config.ts");
+  try {
+    const load = (value) => module.loadVoiceAssistantConfig({ XAI_API_KEY: "x", ELEVENLABS_API_KEY: "e", ...(value === undefined ? {} : { JARVIS_REMINDER_MINUTES: value }) }).reminderMinutes;
+    assert.equal(load(undefined), 10);
+    assert.equal(load("5"), 5);
+    assert.equal(load("600"), 120);
+    assert.equal(load("off"), null);
+    assert.equal(load("0"), null);
+  } finally {
+    await dispose();
+  }
+});

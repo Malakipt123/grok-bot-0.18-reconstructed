@@ -105,6 +105,12 @@ async function main(): Promise<void> {
     onError: (routine, error) => console.error(`Routine "${routine.name}" failed: ${errorMessage(error)}`),
   });
   scheduler.start();
+  const reminders = runtime.startReminders((reminder) => {
+    void streamReply(async (onText) => {
+      onText(reminder.text);
+      return reminder.text;
+    });
+  });
 
   console.log(`Jarvis ready · Grok ${config.grokModel} · ElevenLabs ${config.elevenLabsTtsModel} · ${profile.routines.length} routine(s)\n${HELP}`);
 
@@ -191,6 +197,7 @@ async function main(): Promise<void> {
     closing = true;
     await queue;
     scheduler.stop();
+    reminders.stop();
     stopSpeaking();
     process.exit(0);
   });

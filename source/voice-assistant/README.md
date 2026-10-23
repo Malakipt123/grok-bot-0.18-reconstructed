@@ -92,6 +92,25 @@ Then ask things like "o que tenho amanhã?", "estou livre na sexta à tarde?" or
 time before creating an event unless you already said all of them. The daily
 brief includes today's agenda.
 
+- **Proactive reminders.** Ten minutes before each timed event, Jarvis says
+  "Daqui a 10 minutos tens Reunião com a Ana, em Lisboa." and the HUD shows it.
+  If the meeting is already inside that window when the app starts, you hear
+  the real number of minutes left, or "Está a começar agora". All-day events
+  are skipped.
+  - The calendar is checked every 5 minutes, and each event gets its own
+    timer, so a reminder fires on time rather than at the next check. Moved
+    events are rescheduled and cancelled ones are dropped. Each event is
+    announced once.
+  - Reminders never talk over you. During a conversation they wait until Jarvis
+    is idle, and they play one at a time. One that only becomes speakable after
+    the event has started is shown as a notification instead. Routine
+    briefings use the same queue, and are still spoken within 30 minutes of a
+    conversation ending.
+  - The text is built locally, so a reminder costs one Calendar request per
+    check and no Grok call. A failing calendar is reported once per outage,
+    not every 5 minutes.
+  - `JARVIS_REMINDER_MINUTES` changes the lead time (default `10`, at most
+    `120`); `off` disables reminders.
 - Times use the system time zone, or `JARVIS_TIMEZONE` (IANA name, e.g.
   `Europe/Lisbon`). DST is handled.
 - Until you connect, Grok gets no calendar tools. It only knows to tell you
@@ -213,6 +232,7 @@ Pass `--mute` for text-only replies.
 | `JARVIS_CONVERSATION_TTL_HOURS` | `12` (restore the last conversation if newer) |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | unset (Calendar off) |
 | `JARVIS_TIMEZONE` | system time zone |
+| `JARVIS_REMINDER_MINUTES` | `10` (`off` disables event reminders) |
 
 ## ASSISTANT.md
 

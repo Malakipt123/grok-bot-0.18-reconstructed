@@ -9,6 +9,7 @@ import { GrokClient } from "./grok.js";
 import { createCalendarToolkit, GoogleCalendarClient } from "./calendar.js";
 import { GOOGLE_TOKEN_FILENAME, GoogleOAuth } from "./google-auth.js";
 import { MEMORY_FILENAME, MemoryStore } from "./memory.js";
+import { EventReminders, type Reminder } from "./reminders.js";
 import { DEFAULT_ASSISTANT_PROFILE, parseAssistantProfile, type AssistantProfile, type AssistantRoutine } from "./profile.js";
 
 /** Everything a front end (terminal or desktop) needs, built from one config. */
@@ -22,6 +23,11 @@ export interface VoiceAssistantRuntime {
   readonly memory: MemoryStore | null;
   /** Null when GOOGLE_CLIENT_ID is not configured. */
   readonly google: GoogleOAuth | null;
+  /**
+   * Starts announcing calendar events `reminderMinutes` before they begin.
+   * Does nothing (and stop() is a no-op) without Google Calendar or with reminders off.
+   */
+  startReminders(announce: (reminder: Reminder) => void): { stop(): void };
   /** Runs a routine, appends its report to the routine's log file, and returns the report. */
   runRoutine(routine: Pick<AssistantRoutine, "name" | "logFile">): Promise<string>;
 }
@@ -70,13 +76,10 @@ export async function createVoiceAssistantRuntime(
       },
     })
     : null;
-  const toolkits = google
-    ? [createCalendarToolkit({
-      auth: google,
-      timeZone: config.timeZone,
-      calendar: new GoogleCalendarClient({ auth: google, timeZone: config.timeZone, locale: config.language, ...(options.fetch ? { fetch: options.fetch } : {}) }),
-    })]
-    : [];
+  const calendar = google
+    ? new GoogleCalendarClient({ auth: google, timeZone: config.timeZone, locale: config.language, ...(options.fetch ? { fetch: options.fetch } : {}) })
+    : null;
+  const toolkits = google && calendar ? [createCalendarToolkit({ auth: google, timeZone: config.timeZone, calendar })] : [];
   const connectCalendar = () => {
     if (!google) {
       return portuguese
@@ -128,6 +131,19 @@ export async function createVoiceAssistantRuntime(
     createdProfile,
     memory,
     google,
+    startReminders(announce) {
+      if (!google || !calendar || config.reminderMinutes === null) return { stop() {} };
+      const reminders = new EventReminders({
+        listEvents: (from, to) => calendar.listEvents(from, to),
+        isConnected: () => google.isConnected(),
+        leadMinutes: config.reminderMinutes,
+        language: config.language,
+        announce,
+        onError: (error) => options.onNotice?.(`${portuguese ? "Avisos do calendário" : "Calendar reminders"}: ${error instanceof Error ? error.message : String(error)}`),
+      });
+      reminders.start();
+      return { stop: () => reminders.stop() };
+    },
     async runRoutine(routine) {
       const report = await assistant.runRoutine(routine.name);
       await appendFile(path.join(profileDirectory, routine.logFile), `\n## ${new Date().toISOString()} — ${routine.name}\n\n${stripAudioTags(report)}\n`);

@@ -38,6 +38,7 @@ export interface DesktopVoiceHudPort {
 
 const ENVELOPE_WINDOW_MS = 50;
 const SPOKEN_TICK_MS = 60;
+const ANNOUNCE_AFTER_IDLE_MS = 600;
 const ALL_WORDS = 1_000_000;
 
 export interface DesktopVoiceShortcutPort {
@@ -56,7 +57,7 @@ export interface DesktopVoiceDeps {
   readonly onStateChange?: (state: DesktopVoiceState) => void;
   /** When present, replies go to the HUD instead of OS notifications. */
   readonly hud?: DesktopVoiceHudPort;
-  readonly createRuntime?: (config: VoiceAssistantConfig) => Promise<Pick<VoiceAssistantRuntime, "assistant" | "voice" | "profile" | "runRoutine">>;
+  readonly createRuntime?: (config: VoiceAssistantConfig) => Promise<Pick<VoiceAssistantRuntime, "assistant" | "voice" | "profile" | "runRoutine"> & Partial<Pick<VoiceAssistantRuntime, "startReminders">>>;
   readonly startRecording?: (options: RecordingOptions) => Promise<Recording>;
   readonly player?: { play(wav: Uint8Array, onStart?: () => void): Promise<void>; stop(): void };
   readonly maxRecordingMs?: number;
@@ -122,6 +123,8 @@ export async function startDesktopVoiceAssistant(deps: DesktopVoiceDeps): Promis
     if (next !== "speaking") stopEnvelope();
     deps.onStateChange?.(next);
     hud?.update({ type: "state", state: next });
+    // Announcements that arrived mid-conversation are spoken once Jarvis is free.
+    if (next === "idle" && pendingAnnouncements.length > 0) setTimeout(() => void flushAnnouncements(), ANNOUNCE_AFTER_IDLE_MS);
   };
 
   const fail = (leg: string, error: unknown) => {
@@ -252,6 +255,38 @@ export async function startDesktopVoiceAssistant(deps: DesktopVoiceDeps): Promis
     if (turn === generation && state !== "idle" && state !== "listening") setState("idle");
   };
 
+  /** Speaks text Jarvis says on its own (routines, reminders) when idle; otherwise it waits. */
+  const pendingAnnouncements: Array<{ readonly text: string; readonly title: string; readonly expiresAt: number }> = [];
+  // The state stays "idle" while an announcement is being synthesised, so this flag keeps two from overlapping.
+  let announcing = false;
+  const announce = async (text: string, title: string, expiresAt: number) => {
+    if (state !== "idle" || announcing || disposed) {
+      pendingAnnouncements.push({ text, title, expiresAt });
+      return;
+    }
+    announcing = true;
+    try {
+      await reply(generation, async (onText) => {
+        onText(text);
+        return text;
+      });
+    } finally {
+      announcing = false;
+      if (pendingAnnouncements.length > 0) setTimeout(() => void flushAnnouncements(), ANNOUNCE_AFTER_IDLE_MS);
+    }
+  };
+  const flushAnnouncements = async () => {
+    if (announcing || disposed || state !== "idle") return;
+    const next = pendingAnnouncements.shift();
+    if (!next) return;
+    // Too late to be useful as speech (e.g. the meeting already started): a silent notice instead.
+    if (Date.now() > next.expiresAt) {
+      deps.notify(next.title, stripAudioTags(next.text));
+      return flushAnnouncements();
+    }
+    await announce(next.text, next.title, next.expiresAt).catch((error: unknown) => deps.reportFailure("announce", error));
+  };
+
   const interrupt = () => {
     abort?.abort();
     abort = null;
@@ -328,6 +363,8 @@ export async function startDesktopVoiceAssistant(deps: DesktopVoiceDeps): Promis
       disposed = true;
       generation += 1;
       scheduler.stop();
+      reminders.stop();
+      pendingAnnouncements.length = 0;
       deps.shortcut.unregister(accelerator);
       if (recordingTimer) clearTimeout(recordingTimer);
       void recording?.stop().catch(() => undefined);
@@ -347,18 +384,16 @@ export async function startDesktopVoiceAssistant(deps: DesktopVoiceDeps): Promis
     routines: runtime.profile.routines,
     run: async (routine) => {
       const report = await runtime.runRoutine(routine);
-      if (state === "idle") {
-        await reply(generation, async (onText) => {
-          onText(report);
-          return report;
-        });
-      }
-      else if (hud) hud.update({ type: "text", speaker: "jarvis", text: stripAudioTags(report) });
-      else deps.notify(`Jarvis · ${routine.name}`, stripAudioTags(report));
+      // A briefing is still worth hearing for a while after a conversation ends.
+      await announce(report, `Jarvis · ${routine.name}`, Date.now() + 30 * 60_000);
     },
     onError: (routine, error) => deps.reportFailure(`routine:${routine.name}`, error),
   });
   scheduler.start();
+
+  const reminders = runtime.startReminders?.((reminder) => {
+    void announce(reminder.text, `Jarvis · ${reminder.event.summary}`, Date.parse(reminder.event.start)).catch((error: unknown) => deps.reportFailure("reminder", error));
+  }) ?? { stop() {} };
 
   return { status: "started", assistant };
 }
