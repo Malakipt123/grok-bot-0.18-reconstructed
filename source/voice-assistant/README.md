@@ -38,6 +38,32 @@ microphone ──sox/ffmpeg──▶ ElevenLabs Scribe (speech-to-text)
   routines. The output of each routine is spoken aloud and appended to a log
   file next to the profile.
 
+## Memory between sessions
+
+Jarvis remembers across restarts, in `memory.json` next to `ASSISTANT.md`.
+The file is private to your user (`0600`), written atomically, and never
+leaves your machine except as context in Grok requests.
+
+- **Long-term facts.** Saying "lembra-te que …" / "remember that …" stores the
+  fact instantly, without calling Grok. Grok can also call `remember` when you
+  mention something durable (your name, preferences, people, routines) and
+  `forget` when you ask it to. Facts go into every prompt, newest first, within
+  a 4,000-character budget, and routines see them too. That is how the 07:00
+  brief knows who it is talking to. At most 200 facts are kept; the
+  longest-untouched one makes room for a new one, and repeating a fact updates
+  it instead of creating a duplicate.
+- **Recent conversation.** The last turns are saved after each reply and
+  restored on restart if they are newer than `JARVIS_CONVERSATION_TTL_HOURS`
+  (default 12). After that a new conversation starts, but the facts stay.
+- **Never stored:** anything that looks like a password, PIN, CVV, IBAN,
+  verification code or card number. This is refused both on the local path and
+  in the tool.
+- **Your control:** `/memory` lists facts with their ids, `/forget m3` removes
+  one, and `/forget all` clears facts and the saved conversation. By voice, ask
+  "esquece que …". `JARVIS_MEMORY=off` turns memory off entirely.
+- An unreadable `memory.json` is never overwritten. It is moved aside as
+  `memory.json.corrupt-<timestamp>` and reported.
+
 ## Desktop (Option+Space)
 
 ![Jarvis HUD: listening, thinking and speaking](../../docs/assets/jarvis-hud.png)
@@ -129,7 +155,8 @@ npm run voice
 ```
 
 Press **Enter** to start talking and **Enter** again to stop. You can also type
-a message. Replies print as they stream and are spoken sentence by sentence. Commands: `/mute`, `/routines`, `/run <routine>`, `/help`, `/quit`.
+a message. Replies print as they stream and are spoken sentence by sentence. Commands: `/mute`, `/routines`, `/run <routine>`, `/memory`,
+`/forget <id|all>`, `/help`, `/quit`.
 Pass `--mute` for text-only replies.
 
 | Variable | Default |
@@ -142,6 +169,8 @@ Pass `--mute` for text-only replies.
 | `JARVIS_LANGUAGE` | `pt` (reply language and transcription hint) |
 | `JARVIS_PROFILE` | `~/.grok-bot/voice-assistant/ASSISTANT.md` |
 | `JARVIS_HISTORY_LIMIT` | `20` messages |
+| `JARVIS_MEMORY` | on (`off` disables `memory.json`) |
+| `JARVIS_CONVERSATION_TTL_HOURS` | `12` (restore the last conversation if newer) |
 
 ## ASSISTANT.md
 

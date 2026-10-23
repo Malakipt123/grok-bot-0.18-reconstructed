@@ -91,7 +91,9 @@ export async function startDesktopVoiceAssistant(deps: DesktopVoiceDeps): Promis
   const missing = VOICE_SECRET_KEYS.filter((key) => !voiceEnv[key]?.trim());
   if (missing.length > 0) return { status: "missing-keys", detail: `Add ${missing.join(" and ")} as secrets to enable the voice assistant.` };
 
-  const runtime = await (deps.createRuntime ?? createVoiceAssistantRuntime)(loadVoiceAssistantConfig(voiceEnv));
+  const createRuntime = deps.createRuntime
+    ?? ((config: VoiceAssistantConfig) => createVoiceAssistantRuntime(config, { onMemoryError: (error) => deps.reportFailure("memory", error) }));
+  const runtime = await createRuntime(loadVoiceAssistantConfig(voiceEnv));
   const record = deps.startRecording ?? startSystemRecording;
   const player = deps.player ?? new AudioPlayer();
   const maxRecordingMs = deps.maxRecordingMs ?? 30_000;

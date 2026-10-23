@@ -13,6 +13,10 @@ export interface VoiceAssistantConfig {
   readonly language: string;
   readonly profilePath: string;
   readonly historyLimit: number;
+  /** Long-term facts and conversation persistence in memory.json next to the profile. */
+  readonly memoryEnabled: boolean;
+  /** A saved conversation older than this starts fresh on restart (facts are always kept). */
+  readonly conversationTtlHours: number;
 }
 
 export class VoiceAssistantConfigError extends Error {
@@ -32,6 +36,7 @@ export function loadVoiceAssistantConfig(env: NodeJS.ProcessEnv = process.env): 
     throw new VoiceAssistantConfigError(`Missing required environment variable(s): ${missing.join(", ")}`);
   }
   const historyLimit = Number.parseInt(env.JARVIS_HISTORY_LIMIT ?? "", 10);
+  const conversationTtlHours = Number.parseFloat(env.JARVIS_CONVERSATION_TTL_HOURS ?? "");
   return {
     xaiApiKey: env.XAI_API_KEY!.trim(),
     xaiBaseUrl: trimSlash(env.XAI_BASE_URL || "https://api.x.ai/v1"),
@@ -44,6 +49,8 @@ export function loadVoiceAssistantConfig(env: NodeJS.ProcessEnv = process.env): 
     language: env.JARVIS_LANGUAGE || "pt",
     profilePath: env.JARVIS_PROFILE || defaultProfilePath(),
     historyLimit: Number.isFinite(historyLimit) && historyLimit > 0 ? historyLimit : 20,
+    memoryEnabled: env.JARVIS_MEMORY?.trim().toLowerCase() !== "off",
+    conversationTtlHours: Number.isFinite(conversationTtlHours) && conversationTtlHours >= 0 ? conversationTtlHours : 12,
   };
 }
 

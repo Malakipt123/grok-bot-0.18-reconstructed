@@ -7,7 +7,7 @@ import { RoutineScheduler } from "./scheduler.js";
 import { AudioTagFilter, SpeechPipeline } from "./speech-pipeline.js";
 
 const HELP = `Press Enter to start talking and Enter again to stop, or type a message.
-Commands: /mute  /routines  /run <routine>  /help  /quit`;
+Commands: /mute  /routines  /run <routine>  /memory  /forget <id|all>  /help  /quit`;
 
 async function main(): Promise<void> {
   const config = (() => {
@@ -26,9 +26,10 @@ async function main(): Promise<void> {
     return;
   }
 
-  const runtime = await createVoiceAssistantRuntime(config);
+  const runtime = await createVoiceAssistantRuntime(config, { onMemoryError: (error) => console.error(`Memory: ${errorMessage(error)}`) });
   const { assistant, voice, profile } = runtime;
   if (runtime.createdProfile) console.log(`Created ${config.profilePath}`);
+  const memory = runtime.memory;
   const player = new AudioPlayer();
   let muted = process.argv.includes("--mute") || !player.available;
   if (!player.available) console.log("No audio player found; replies will be text only.");
@@ -140,6 +141,19 @@ async function main(): Promise<void> {
       console.log(muted ? "Voice off." : "Voice on.");
     } else if (text === "/routines") {
       console.log(profile.routines.map((routine) => `${routine.time}  ${routine.name} → ${routine.logFile}`).join("\n") || "No routines configured.");
+    } else if (text === "/memory") {
+      if (!memory) console.log("Memory is off (JARVIS_MEMORY=off).");
+      else console.log(memory.facts.map((fact) => `[${fact.id}] ${fact.text}`).join("\n") || `Nothing remembered yet. (${memory.path})`);
+    } else if (text.startsWith("/forget ")) {
+      const target = text.slice(8).trim();
+      if (!memory) console.log("Memory is off.");
+      else if (target === "all") {
+        await memory.forgetAll();
+        console.log("Forgot everything, including the saved conversation.");
+      } else {
+        const removed = await memory.forget(target);
+        console.log(removed ? `Forgot: ${removed.text}` : `No memory ${target}. Use /memory to list ids.`);
+      }
     } else if (text.startsWith("/run ")) {
       const name = text.slice(5).trim();
       const routine = profile.routines.find((entry) => entry.name.toLowerCase() === name.toLowerCase());

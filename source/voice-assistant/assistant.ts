@@ -1,6 +1,7 @@
 import { ACTION_TOOLS, executeAction, isActionName, type ActionContext } from "./actions.js";
 import type { GrokClient, GrokMessage } from "./grok.js";
 import { routeIntent } from "./intent-router.js";
+import { isMemoryToolName, MEMORY_TOOLS, type MemoryStore } from "./memory.js";
 import type { AssistantProfile } from "./profile.js";
 
 export interface AssistantReply {
@@ -23,6 +24,13 @@ export interface VoiceAssistantOptions {
   readonly language: string;
   readonly historyLimit: number;
   readonly maxToolRounds?: number;
+  /** Long-term facts and conversation persistence; omitted, the assistant forgets on restart. */
+  readonly memory?: MemoryStore;
+  /** Conversation restored from a previous session. */
+  readonly initialHistory?: readonly GrokMessage[];
+  readonly onMemoryError?: (error: unknown) => void;
+  /** Spoken confirmation for "remember that …" handled locally, in the reply language. */
+  readonly rememberedReply?: string;
 }
 
 export class VoiceAssistant {
@@ -31,6 +39,7 @@ export class VoiceAssistant {
 
   constructor(options: VoiceAssistantOptions) {
     this.#options = options;
+    this.#history = trimHistory([...(options.initialHistory ?? [])], options.historyLimit);
   }
 
   get history(): readonly GrokMessage[] {
@@ -40,6 +49,17 @@ export class VoiceAssistant {
   async handle(transcript: string, options: HandleOptions = {}): Promise<AssistantReply> {
     const intent = routeIntent(transcript);
     if (intent.kind === "stop") return { text: "", source: "stop" };
+    if (intent.kind === "remember" && this.#options.memory) {
+      try {
+        await this.#options.memory.remember(intent.fact);
+        const text = this.#options.rememberedReply ?? "Noted.";
+        options.onText?.(text);
+        return { text, source: "local" };
+      } catch (error) {
+        // Too long, or the disk refused it: Grok can still answer and explain.
+        this.#options.onMemoryError?.(error);
+      }
+    }
     if (intent.kind === "action") {
       try {
         const text = await executeAction(intent.action, intent.args, this.#options.actions);
@@ -52,6 +72,7 @@ export class VoiceAssistant {
     const turn: GrokMessage[] = [...this.#history, { role: "user", content: transcript }];
     const text = await this.#runToolLoop(turn, options);
     this.#history = trimHistory([...turn, { role: "assistant", content: text }], this.#options.historyLimit);
+    await this.#options.memory?.saveConversation(this.#history).catch((error: unknown) => this.#options.onMemoryError?.(error));
     return { text, source: "grok" };
   }
 
@@ -71,7 +92,7 @@ export class VoiceAssistant {
       options.onText?.(delta);
     };
     for (let round = 0; round <= rounds; round += 1) {
-      const tools = round < rounds ? ACTION_TOOLS : [];
+      const tools = round < rounds ? (this.#options.memory ? [...ACTION_TOOLS, ...MEMORY_TOOLS] : ACTION_TOOLS) : [];
       const streaming = Boolean(grok.stream && options.onText);
       const completion = streaming
         ? await grok.stream!(messages, tools, { onText, ...(options.signal ? { signal: options.signal } : {}) })
@@ -87,13 +108,35 @@ export class VoiceAssistant {
   }
 
   async #runToolCall(name: string, rawArguments: string): Promise<string> {
-    if (!isActionName(name)) return `Error: unknown tool ${name}`;
+    const memory = this.#options.memory;
+    if (!isActionName(name) && !(memory && isMemoryToolName(name))) return `Error: unknown tool ${name}`;
     try {
       const args = rawArguments ? (JSON.parse(rawArguments) as Record<string, unknown>) : {};
+      if (memory && name === "remember") {
+        const { fact, created } = await memory.remember(String(args.fact ?? ""));
+        return created ? `Saved as [${fact.id}].` : `Already known as [${fact.id}].`;
+      }
+      if (memory && name === "forget") {
+        const removed = await memory.forget(String(args.id ?? ""));
+        return removed ? `Forgot [${removed.id}].` : "No memory with that id.";
+      }
+      if (!isActionName(name)) return `Error: unknown tool ${name}`;
       return await executeAction(name, args, this.#options.actions);
     } catch (error) {
       return `Error: ${error instanceof Error ? error.message : String(error)}`;
     }
+  }
+
+  #memoryPrompt(): string {
+    const memory = this.#options.memory;
+    if (!memory) return "";
+    const facts = memory.promptBlock();
+    return [
+      "You have a long-term memory that persists between sessions.",
+      "When the user shares something durable about themselves (name, preferences, people, places, routines) or asks you to remember something, call remember. Do not store secrets such as passwords, card numbers or one-time codes.",
+      "When asked to forget something, call forget with its id. Never read ids aloud.",
+      facts ? `What you remember about the user:\n${facts}` : "You do not remember anything about the user yet.",
+    ].join("\n");
   }
 
   #systemPrompt(): string {
@@ -105,6 +148,7 @@ export class VoiceAssistant {
       "Your reply is read aloud by a text-to-speech engine: no Markdown, no lists, no URLs, at most three sentences unless asked for detail.",
       "You may add sparse emotion tags in square brackets such as [laughs] or [sighs]; they are performed, not spoken.",
       "Use the provided tools for actions on the computer instead of describing how to do them.",
+      this.#memoryPrompt(),
       `Current local time: ${this.#options.actions.now().toString()}.`,
     ].filter(Boolean).join("\n");
   }

@@ -902,3 +902,139 @@ test("HUD highlights each word at its aligned start time and falls back when tim
     await dispose();
   }
 });
+
+test("memory store persists facts atomically and privately, dedupes, evicts and refuses secrets", async () => {
+  const { module, temporary, dispose } = await loadModule("memory.ts");
+  try {
+    let clock = Date.parse("2026-10-23T08:00:00Z");
+    const now = () => new Date(clock);
+    const file = path.join(temporary, "profile", "memory.json");
+    const store = await module.MemoryStore.open(file, { now, maxFacts: 3 });
+    assert.deepEqual(store.facts, []);
+
+    assert.equal((await store.remember("O utilizador chama-se Malaki.")).fact.id, "m1");
+    clock += 1000;
+    const duplicate = await store.remember("  o utilizador   chama-se malaki ");
+    assert.equal(duplicate.created, false);
+    assert.equal(duplicate.fact.id, "m1");
+    clock += 1000;
+    await store.remember("Prefere café sem açúcar");
+    clock += 1000;
+    await store.remember("A irmã chama-se Ana");
+    clock += 1000;
+    await store.remember("Trabalha em Lisboa");
+    assert.deepEqual(store.facts.map((fact) => fact.id), ["m2", "m3", "m4"], "with maxFacts 3, the oldest untouched fact (m1) is evicted");
+
+    await assert.rejects(store.remember("A minha password do banco é hunter2"), /password/);
+    await assert.rejects(store.remember("Cartão 4111 1111 1111 1111"), /card number/);
+    await assert.rejects(store.remember("x".repeat(301)), /at most 300/);
+    assert.equal(store.facts.length, 3);
+    assert.equal(module.looksSecret("O código postal é 1000-001"), false);
+
+    const stat = await (await import("node:fs/promises")).stat(file);
+    assert.equal(stat.mode & 0o777, 0o600);
+    assert.deepEqual((await (await import("node:fs/promises")).readdir(path.dirname(file))).sort(), ["memory.json"], "no temp files left behind");
+
+    const reopened = await module.MemoryStore.open(file, { now });
+    assert.deepEqual(reopened.facts.map((fact) => fact.text), ["Prefere café sem açúcar", "A irmã chama-se Ana", "Trabalha em Lisboa"]);
+    clock += 1000;
+    assert.equal((await reopened.remember("Gosta de jazz")).fact.id, "m5", "ids keep increasing after a restart");
+    assert.equal((await reopened.forget("[m3]")).text, "A irmã chama-se Ana");
+    assert.equal(await reopened.forget("m99"), null);
+    assert.match(reopened.promptBlock(), /^\[m5\] Gosta de jazz\n/);
+    assert.equal(reopened.promptBlock(25), "[m5] Gosta de jazz");
+  } finally {
+    await dispose();
+  }
+});
+
+test("memory store restores only a recent conversation and keeps unreadable files aside", async () => {
+  const { module, temporary, dispose } = await loadModule("memory.ts");
+  try {
+    let clock = Date.parse("2026-10-23T08:00:00Z");
+    const file = path.join(temporary, "memory.json");
+    const store = await module.MemoryStore.open(file, { now: () => new Date(clock) });
+    await store.saveConversation([
+      { role: "assistant", content: "orphan" },
+      { role: "user", content: "Olá" },
+      { role: "assistant", content: null, tool_calls: [] },
+      { role: "tool", tool_call_id: "1", content: "x" },
+      { role: "assistant", content: "Olá, Malaki." },
+    ]);
+    clock += 2 * 3_600_000;
+    const later = await module.MemoryStore.open(file, { now: () => new Date(clock) });
+    assert.deepEqual(later.restoreConversation(12 * 3_600_000), [{ role: "user", content: "Olá" }, { role: "assistant", content: "Olá, Malaki." }]);
+    assert.deepEqual(later.restoreConversation(3_600_000), [], "older than the TTL starts fresh");
+    assert.deepEqual(later.restoreConversation(0), []);
+    await later.forgetAll();
+    assert.deepEqual((await module.MemoryStore.open(file)).restoreConversation(1e12), []);
+
+    const { writeFile, readdir } = await import("node:fs/promises");
+    await writeFile(file, "{ not json");
+    const backups = [];
+    const recovered = await module.MemoryStore.open(file, { onCorruptFile: (backup) => backups.push(backup) });
+    assert.deepEqual(recovered.facts, []);
+    assert.equal(backups.length, 1);
+    assert.ok((await readdir(temporary)).some((name) => name.startsWith("memory.json.corrupt-")), "the unreadable file is kept");
+  } finally {
+    await dispose();
+  }
+});
+
+test("intent router stores explicit facts locally but sends reminders and secrets to Grok", async () => {
+  const { module, dispose } = await loadModule("intent-router.ts");
+  try {
+    assert.deepEqual(module.routeIntent("Lembra-te que o meu nome é Malaki."), { kind: "remember", fact: "o meu nome é Malaki" });
+    assert.deepEqual(module.routeIntent("remember that I take my coffee black"), { kind: "remember", fact: "I take my coffee black" });
+    assert.deepEqual(module.routeIntent("lembra-te de comprar leite amanhã"), { kind: "llm" });
+    assert.deepEqual(module.routeIntent("lembra-te que a minha senha é 1234"), { kind: "llm" });
+  } finally {
+    await dispose();
+  }
+});
+
+test("assistant uses memory across a restart: prompt facts, remember/forget tools and restored conversation", async () => {
+  const assistantModule = await loadModule("assistant.ts");
+  const memoryModule = await loadModule("memory.ts");
+  try {
+    const file = path.join(memoryModule.temporary, "memory.json");
+    const { context } = actionContext();
+    const profile = { persona: "You are Jarvis.", capabilities: "", routines: [] };
+    const requests = [];
+    const replies = [];
+    const grok = { async complete(messages, tools) { requests.push({ messages: structuredClone(messages), tools: tools.map((tool) => tool.function.name) }); return replies.shift(); } };
+
+    const memory = await memoryModule.module.MemoryStore.open(file);
+    const first = new assistantModule.module.VoiceAssistant({ grok, profile, actions: context, language: "pt", historyLimit: 20, memory, rememberedReply: "Fica registado." });
+    assert.deepEqual(await first.handle("Lembra-te que o meu nome é Malaki"), { text: "Fica registado.", source: "local" });
+    assert.equal(requests.length, 0);
+
+    replies.push(
+      { content: null, toolCalls: [{ id: "t1", type: "function", function: { name: "remember", arguments: "{\"fact\":\"O utilizador vive no Porto\"}" } }] },
+      { content: "Anotado, o Porto é lindo.", toolCalls: [] },
+    );
+    await first.handle("Mudei-me para o Porto");
+    assert.ok(requests[0].tools.includes("remember") && requests[0].tools.includes("forget"));
+    assert.match(requests[0].messages[0].content, /\[m1\] o meu nome é Malaki/);
+    assert.deepEqual(requests[1].messages.at(-1), { role: "tool", tool_call_id: "t1", content: "Saved as [m2]." });
+
+    // Restart: new store and assistant from the same file.
+    const memoryAfterRestart = await memoryModule.module.MemoryStore.open(file);
+    const second = new assistantModule.module.VoiceAssistant({
+      grok, profile, actions: context, language: "pt", historyLimit: 20,
+      memory: memoryAfterRestart, initialHistory: memoryAfterRestart.restoreConversation(3_600_000),
+    });
+    replies.push(
+      { content: null, toolCalls: [{ id: "t2", type: "function", function: { name: "forget", arguments: "{\"id\":\"m2\"}" } }] },
+      { content: "Esquecido.", toolCalls: [] },
+    );
+    await second.handle("Esquece onde eu moro");
+    const afterRestart = requests[2].messages;
+    assert.match(afterRestart[0].content, /\[m2\] O utilizador vive no Porto/);
+    assert.deepEqual(afterRestart.slice(1, 3).map((message) => message.content), ["Mudei-me para o Porto", "Anotado, o Porto é lindo."], "the previous conversation is restored");
+    assert.deepEqual(memoryAfterRestart.facts.map((fact) => fact.id), ["m1"]);
+  } finally {
+    await assistantModule.dispose();
+    await memoryModule.dispose();
+  }
+});
