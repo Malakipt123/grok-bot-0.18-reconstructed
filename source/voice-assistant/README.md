@@ -109,6 +109,23 @@ brief includes today's agenda.
   - The text is built locally, so a reminder costs one Calendar request per
     check and no Grok call. A failing calendar is reported once per outage,
     not every 5 minutes.
+  - **Join from the reminder.** When the event has a video call, the reminder
+    ends with "Diz «abre a reunião» para entrares." Press Option+Space and say
+    **"abre a reunião"** (also "entra na reunião", "abre o Meet", "join the
+    meeting") to open the call in your browser. This is handled locally, with
+    no Grok call and no Calendar request for the meeting that was just
+    announced. Without a recent reminder, the same phrase opens the meeting in
+    progress or starting within 15 minutes. Grok can also do it through
+    `calendar_join_meeting` ("entra na reunião das três"). The agenda marks
+    such events as `[Google Meet]` or `[video call]` instead of reading out
+    links.
+  - **Only real call links are opened.** The link comes from Google's own
+    conference data (`hangoutLink` and video entry points) first, then from a
+    URL in the location or description. Because anyone can send you an invite,
+    only `https` links on `meet.google.com`, `zoom.us`, `teams.microsoft.com`
+    or `teams.live.com` are accepted, and look-alikes such as
+    `meet.google.com.evil.example` are not. The check is repeated right
+    before opening.
   - `JARVIS_REMINDER_MINUTES` changes the lead time (default `10`, at most
     `120`); `off` disables reminders.
 - Times use the system time zone, or `JARVIS_TIMEZONE` (IANA name, e.g.

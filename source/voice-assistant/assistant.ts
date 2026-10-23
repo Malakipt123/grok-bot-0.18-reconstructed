@@ -36,6 +36,8 @@ export interface VoiceAssistantOptions {
   readonly toolkits?: readonly AssistantToolkit[];
   /** Starts the Google sign-in for "connect my calendar"; returns what Jarvis says meanwhile. */
   readonly connectCalendar?: () => string;
+  /** Opens the current or announced meeting's video call; returns what Jarvis says. */
+  readonly joinMeeting?: () => Promise<string>;
 }
 
 export class VoiceAssistant {
@@ -56,6 +58,11 @@ export class VoiceAssistant {
     if (intent.kind === "stop") return { text: "", source: "stop" };
     if (intent.kind === "connect-calendar" && this.#options.connectCalendar) {
       const text = this.#options.connectCalendar();
+      options.onText?.(text);
+      return { text, source: "local" };
+    }
+    if (intent.kind === "join-meeting" && this.#options.joinMeeting) {
+      const text = await this.#options.joinMeeting();
       options.onText?.(text);
       return { text, source: "local" };
     }

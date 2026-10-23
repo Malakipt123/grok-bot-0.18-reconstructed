@@ -1402,3 +1402,157 @@ test("reminder lead time defaults to 10 minutes, can be changed, clamped or turn
     await dispose();
   }
 });
+
+test("meeting links: only https video-call hosts, from conference data first, never look-alike domains", async () => {
+  const { module, dispose } = await loadModule("calendar.ts");
+  try {
+    for (const good of ["https://meet.google.com/abc-defg-hij", "https://us02web.zoom.us/j/123", "https://zoom.us/j/1", "https://teams.microsoft.com/l/meetup-join/x"]) {
+      assert.equal(module.isMeetingUrl(good), true, good);
+    }
+    for (const bad of ["http://meet.google.com/abc", "https://meet.google.com.evil.example/abc", "https://evil.example/meet.google.com", "https://user:pw@meet.google.com/x", "javascript:alert(1)", "https://zoom.us.evil.example/j/1"]) {
+      assert.equal(module.isMeetingUrl(bad), false, bad);
+    }
+    assert.equal(module.meetingUrlOf({ hangoutLink: "https://meet.google.com/aaa-bbbb-ccc", description: "https://zoom.us/j/9" }), "https://meet.google.com/aaa-bbbb-ccc");
+    assert.equal(module.meetingUrlOf({ conferenceData: { entryPoints: [{ entryPointType: "phone", uri: "tel:+351" }, { entryPointType: "video", uri: "https://meet.google.com/xyz-abcd-efg" }] } }), "https://meet.google.com/xyz-abcd-efg");
+    assert.equal(module.meetingUrlOf({ description: "Entra aqui: https://us02web.zoom.us/j/555?pwd=abc. Até já!" }), "https://us02web.zoom.us/j/555?pwd=abc");
+    assert.equal(module.meetingUrlOf({ description: "Clica https://evil.example/login e depois https://meet.google.com.evil.example/x" }), null, "phishing links in an invite are ignored");
+    assert.equal(module.meetingUrlOf({ location: "Sala 2" }), null);
+  } finally {
+    await dispose();
+  }
+});
+
+test("calendar finds the meeting to join and marks calls in the agenda without reading URLs aloud", async () => {
+  const { module, dispose } = await loadModule("calendar.ts");
+  try {
+    const now = Date.parse("2026-10-23T14:58:00Z");
+    const iso = (offsetMinutes) => new Date(now + offsetMinutes * 60_000).toISOString();
+    let items = [];
+    const calendar = new module.GoogleCalendarClient({
+      auth: { accessToken: async () => "t" }, timeZone: "Europe/Lisbon", locale: "pt",
+      fetch: async () => Response.json({ items }),
+    });
+    items = [
+      { id: "ended", summary: "Já acabou", hangoutLink: "https://meet.google.com/old-old-old", start: { dateTime: iso(-90) }, end: { dateTime: iso(-30) } },
+      { id: "nolink", summary: "Almoço", start: { dateTime: iso(-10) }, end: { dateTime: iso(50) } },
+      { id: "ongoing", summary: "Planeamento", hangoutLink: "https://meet.google.com/ong-oing-now", start: { dateTime: iso(-28) }, end: { dateTime: iso(2) } },
+      { id: "next", summary: "Reunião com a Ana", location: "https://meet.google.com/ana-anaa-ana", hangoutLink: "https://meet.google.com/ana-anaa-ana", start: { dateTime: iso(2) }, end: { dateTime: iso(32) } },
+    ];
+    const joinable = await calendar.findJoinableMeeting(new Date(now));
+    assert.equal(joinable.id, "next", "the meeting starting in 2 min is closer than the one that started 28 min ago");
+    const [, , , next] = await calendar.listEvents(new Date(now), new Date(now + 1));
+    const line = calendar.describe(next);
+    assert.match(line, /Reunião com a Ana \[Google Meet\]$/);
+    assert.doesNotMatch(line, /https/, "the call link is never read out");
+
+    items = [{ id: "later", summary: "Daqui a uma hora", hangoutLink: "https://meet.google.com/lat-erer-xyz", start: { dateTime: iso(60) }, end: { dateTime: iso(90) } }];
+    assert.equal(await calendar.findJoinableMeeting(new Date(now)), null, "a meeting an hour away is not joinable yet");
+  } finally {
+    await dispose();
+  }
+});
+
+test("meeting joiner opens the announced call, falls back to the calendar, and explains when there is nothing to join", async () => {
+  const { module, dispose } = await loadModule("calendar.ts");
+  try {
+    let clock = Date.parse("2026-10-23T14:50:00Z");
+    const opened = [];
+    let lookup = null;
+    let lookups = 0;
+    const joiner = module.createMeetingJoiner({
+      language: "pt",
+      now: () => new Date(clock),
+      openUrl: async (url) => { opened.push(url); },
+      calendar: { findJoinableMeeting: async () => { lookups += 1; if (lookup instanceof Error) throw lookup; return lookup; } },
+    });
+    const announced = { id: "a", summary: "Reunião com a Ana", start: new Date(clock + 10 * 60_000).toISOString(), end: new Date(clock + 40 * 60_000).toISOString(), allDay: false, location: null, meetingUrl: "https://meet.google.com/ana-anaa-ana" };
+    joiner.noteAnnounced(announced);
+    assert.equal(await joiner.join(), "A abrir o Google Meet: Reunião com a Ana.");
+    assert.deepEqual(opened, ["https://meet.google.com/ana-anaa-ana"]);
+    assert.equal(lookups, 0, "the announced meeting needs no Calendar request");
+
+    clock += 60 * 60_000; // the announced meeting is over
+    lookup = { ...announced, id: "z", summary: "Sync", meetingUrl: "https://us02web.zoom.us/j/1" };
+    assert.equal(await joiner.join(), "A abrir a videochamada: Sync.");
+    assert.equal(lookups, 1);
+
+    lookup = null;
+    assert.match(await joiner.join(), /Não encontrei nenhuma reunião/);
+    lookup = new module.GoogleNotConnectedError();
+    assert.match(await joiner.join(), /liga o calendário/);
+    assert.equal(opened.length, 2);
+  } finally {
+    await dispose();
+  }
+});
+
+test("reminders mention how to join, and the router sends join phrases to the meeting action", async () => {
+  const reminders = await loadModule("reminders.ts");
+  const router = await loadModule("intent-router.ts");
+  try {
+    const event = { id: "a", summary: "Reunião com a Ana", start: "", end: "", allDay: false, location: "https://meet.google.com/ana-anaa-ana", meetingUrl: "https://meet.google.com/ana-anaa-ana" };
+    assert.equal(reminders.module.reminderText(event, 10, "pt"), "Daqui a 10 minutos tens Reunião com a Ana. Diz «abre a reunião» para entrares.");
+    assert.equal(reminders.module.reminderText(event, 0, "en"), "Starting now: Reunião com a Ana. Say \"join the meeting\" to join.");
+    for (const phrase of ["Abre a reunião", "entra na reunião", "abre o Meet", "abre o google meet", "liga-me à chamada", "join the meeting", "open meet"]) {
+      assert.deepEqual(router.module.routeIntent(phrase), { kind: "join-meeting" }, phrase);
+    }
+    assert.deepEqual(router.module.routeIntent("abre o Spotify"), { kind: "action", action: "open_app", args: { name: "Spotify" } });
+  } finally {
+    await reminders.dispose();
+    await router.dispose();
+  }
+});
+
+test("end to end: a reminder for a Meet call, then \"abre a reunião\" opens that exact link", async () => {
+  const runtimeModule = await loadModule("runtime.ts");
+  try {
+    const { writeFile, mkdir } = await import("node:fs/promises");
+    const profileDir = path.join(runtimeModule.temporary, "jarvis");
+    await mkdir(profileDir, { recursive: true });
+    await writeFile(path.join(profileDir, "google-token.json"), JSON.stringify({ schemaVersion: 1, refreshToken: "rt", scope: "x" }));
+    const start = new Date(Date.now() + 90).toISOString();
+    const end = new Date(Date.now() + 30 * 60_000).toISOString();
+    const fakeFetch = async (url) => {
+      if (String(url).startsWith("https://oauth2.googleapis.com/token")) return Response.json({ access_token: "at", expires_in: 3600 });
+      if (String(url).startsWith("https://www.googleapis.com/calendar/v3/")) {
+        return Response.json({ items: [{ id: "m1", summary: "Reunião com a Ana", hangoutLink: "https://meet.google.com/ana-anaa-ana", start: { dateTime: start }, end: { dateTime: end } }] });
+      }
+      return new Response("unexpected", { status: 500 });
+    };
+    const commands = [];
+    const runtime = await runtimeModule.module.createVoiceAssistantRuntime({
+      xaiApiKey: "x", xaiBaseUrl: "https://api.x.ai/v1", grokModel: "grok-4",
+      elevenLabsApiKey: "e", elevenLabsBaseUrl: "https://api.elevenlabs.io/v1", elevenLabsVoiceId: "v", elevenLabsTtsModel: "eleven_v3", elevenLabsSttModel: "scribe_v1",
+      language: "pt", profilePath: path.join(profileDir, "ASSISTANT.md"), historyLimit: 20, memoryEnabled: false, conversationTtlHours: 12,
+      googleClientId: "client", googleClientSecret: null, timeZone: "Europe/Lisbon", reminderMinutes: 10,
+    }, { platform: "darwin", run: async (file, args) => { commands.push([file, ...args]); }, fetch: fakeFetch });
+
+    const heard = [];
+    const reminders = runtime.startReminders((reminder) => heard.push(reminder.text));
+    await waitFor(() => heard.length === 1);
+    reminders.stop();
+    assert.equal(heard[0], "Está a começar agora: Reunião com a Ana. Diz «abre a reunião» para entrares.");
+
+    const reply = await runtime.assistant.handle("Abre a reunião");
+    assert.deepEqual(reply, { text: "A abrir o Google Meet: Reunião com a Ana.", source: "local" });
+    assert.deepEqual(commands, [["open", "https://meet.google.com/ana-anaa-ana"]]);
+  } finally {
+    await runtimeModule.dispose();
+  }
+});
+
+test("calendar toolkit offers calendar_join_meeting to Grok when a joiner is configured", async () => {
+  const { module, dispose } = await loadModule("calendar.ts");
+  try {
+    const auth = { accessToken: async () => "t", isConnected: async () => true };
+    const calendar = new module.GoogleCalendarClient({ auth, timeZone: "UTC", locale: "en", fetch: async () => Response.json({ items: [] }) });
+    const joiner = { noteAnnounced() {}, join: async () => "Opening Google Meet: Standup." };
+    const toolkit = module.createCalendarToolkit({ auth, calendar, timeZone: "UTC", joiner });
+    assert.ok((await toolkit.tools()).some((tool) => tool.function.name === "calendar_join_meeting"));
+    assert.equal(await toolkit.run("calendar_join_meeting", {}), "Opening Google Meet: Standup.");
+    const withoutJoiner = module.createCalendarToolkit({ auth, calendar, timeZone: "UTC" });
+    assert.ok(!(await withoutJoiner.tools()).some((tool) => tool.function.name === "calendar_join_meeting"));
+  } finally {
+    await dispose();
+  }
+});

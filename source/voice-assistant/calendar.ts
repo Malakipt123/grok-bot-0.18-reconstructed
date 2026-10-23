@@ -19,6 +19,8 @@ export interface CalendarEvent {
   readonly end: string;
   readonly allDay: boolean;
   readonly location: string | null;
+  /** Video-call link (Google Meet, Zoom or Teams), only ever an https URL on a known host. */
+  readonly meetingUrl?: string | null;
 }
 
 export interface NewCalendarEvent {
@@ -37,6 +39,46 @@ export interface GoogleCalendarOptions {
 }
 
 type EventTime = { date: string } | { dateTime: string; timeZone?: string };
+
+// Links in descriptions are attacker-controllable (anyone can invite you), so
+// only video-call hosts are ever opened, and only over https.
+const MEETING_HOSTS = [/^meet\.google\.com$/, /^([a-z0-9-]+\.)?zoom\.us$/, /^teams\.microsoft\.com$/, /^teams\.live\.com$/];
+const URL_IN_TEXT = /https:\/\/[^\s<>"')\]]+/gi;
+
+export function isMeetingUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && !url.username && !url.password && MEETING_HOSTS.some((host) => host.test(url.hostname.toLowerCase()));
+  } catch {
+    return false;
+  }
+}
+
+export function isGoogleMeetUrl(value: string): boolean {
+  return isMeetingUrl(value) && new URL(value).hostname.toLowerCase() === "meet.google.com";
+}
+
+interface RawEvent {
+  id?: string;
+  summary?: string;
+  location?: string;
+  description?: string;
+  status?: string;
+  hangoutLink?: string;
+  conferenceData?: { entryPoints?: Array<{ entryPointType?: string; uri?: string }> };
+  start?: { date?: string; dateTime?: string };
+  end?: { date?: string; dateTime?: string };
+}
+
+/** The event's video-call link: Google's own conference data first, then links typed into location or description. */
+export function meetingUrlOf(event: RawEvent): string | null {
+  const candidates = [
+    event.hangoutLink,
+    ...(event.conferenceData?.entryPoints ?? []).filter((entry) => entry.entryPointType === "video").map((entry) => entry.uri),
+    ...Array.from(`${event.location ?? ""} ${event.description ?? ""}`.matchAll(URL_IN_TEXT), (match) => match[0].replace(/[.,;:!?]+$/, "")),
+  ];
+  return candidates.find((candidate): candidate is string => typeof candidate === "string" && isMeetingUrl(candidate)) ?? null;
+}
 
 /** Turns a Grok-supplied date or date-time into a Calendar API time, or throws a readable error. */
 export function toEventTime(value: string, timeZone: string): EventTime {
@@ -82,9 +124,7 @@ export class GoogleCalendarClient {
       maxResults: String(MAX_EVENTS),
       timeZone: this.#options.timeZone,
     }).toString();
-    const body = await this.#request(url.toString(), { method: "GET" }) as {
-      items?: Array<{ id?: string; summary?: string; location?: string; status?: string; start?: { date?: string; dateTime?: string }; end?: { date?: string; dateTime?: string } }>;
-    };
+    const body = await this.#request(url.toString(), { method: "GET" }) as { items?: RawEvent[] };
     return (body.items ?? [])
       .filter((item) => item.status !== "cancelled" && (item.start?.date || item.start?.dateTime))
       .map((item) => ({
@@ -94,7 +134,23 @@ export class GoogleCalendarClient {
         end: item.end?.dateTime ?? item.end?.date ?? "",
         allDay: Boolean(item.start?.date),
         location: item.location?.trim() || null,
+        meetingUrl: meetingUrlOf(item),
       }));
+  }
+
+  /**
+   * The meeting to join right now: in progress, or starting within `earlyMinutes`.
+   * Among several, the one whose start is closest to now wins.
+   */
+  async findJoinableMeeting(now = new Date(), earlyMinutes = 15): Promise<CalendarEvent | null> {
+    const events = await this.listEvents(new Date(now.getTime() - 12 * 3_600_000), new Date(now.getTime() + earlyMinutes * 60_000));
+    const joinable = events.filter((event) => {
+      if (event.allDay || !event.meetingUrl) return false;
+      const start = Date.parse(event.start);
+      const end = Date.parse(event.end);
+      return start - earlyMinutes * 60_000 <= now.getTime() && now.getTime() < (Number.isFinite(end) ? end : start + 3_600_000);
+    });
+    return joinable.sort((left, right) => Math.abs(Date.parse(left.start) - now.getTime()) - Math.abs(Date.parse(right.start) - now.getTime()))[0] ?? null;
   }
 
   async createEvent(event: NewCalendarEvent): Promise<CalendarEvent & { link: string | null }> {
@@ -131,7 +187,10 @@ export class GoogleCalendarClient {
       .toLocaleDateString(locale, { weekday: "short", day: "2-digit", month: "2-digit", timeZone: DATE_ONLY.test(value) ? "UTC" : timeZone });
     const time = (value: string) => new Date(value).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit", timeZone });
     const when = event.allDay ? `${day(event.start)}, all day` : `${day(event.start)}, ${time(event.start)}–${time(event.end)}`;
-    return `${when} ${event.summary}${event.location ? ` (${event.location})` : ""}`;
+    const call = event.meetingUrl ? (isGoogleMeetUrl(event.meetingUrl) ? " [Google Meet]" : " [video call]") : "";
+    // A location that is just the call link would be read out as a URL; the marker says enough.
+    const location = event.location && !isMeetingUrl(event.location) ? ` (${event.location})` : "";
+    return `${when} ${event.summary}${location}${call}`;
   }
 
   async #request(url: string, init: RequestInit): Promise<unknown> {
@@ -188,6 +247,15 @@ export const CALENDAR_TOOLS: readonly GrokTool[] = [
   },
 ];
 
+export const JOIN_MEETING_TOOL: GrokTool = {
+  type: "function",
+  function: {
+    name: "calendar_join_meeting",
+    description: "Open the video call (Google Meet, Zoom or Teams) of the meeting in progress, about to start, or just announced. Use it when the user wants to join or open their meeting.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+  },
+};
+
 function parseBoundary(value: unknown, timeZone: string): Date {
   const time = toEventTime(String(value ?? ""), timeZone);
   if ("date" in time) return zonedWallClockToDate(`${time.date}T00:00:00`, timeZone);
@@ -209,17 +277,65 @@ export function zonedWallClockToDate(wallClock: string, timeZone: string): Date 
   return new Date(instant);
 }
 
+export interface MeetingJoiner {
+  /** Called when a reminder announced this event, so "abre a reunião" means this one. */
+  noteAnnounced(event: CalendarEvent): void;
+  /** Opens the announced meeting if it is still on, otherwise the one in progress or about to start. */
+  join(): Promise<string>;
+}
+
+export function createMeetingJoiner(options: {
+  readonly calendar: Pick<GoogleCalendarClient, "findJoinableMeeting">;
+  readonly openUrl: (url: string) => Promise<void>;
+  readonly language: string;
+  readonly now?: () => Date;
+}): MeetingJoiner {
+  const portuguese = options.language.toLowerCase().startsWith("pt");
+  let announced: CalendarEvent | null = null;
+  const now = () => options.now?.() ?? new Date();
+  const stillOn = (event: CalendarEvent) => {
+    const end = Date.parse(event.end);
+    return now().getTime() < (Number.isFinite(end) ? end : Date.parse(event.start) + 3_600_000);
+  };
+  return {
+    noteAnnounced(event) {
+      if (event.meetingUrl) announced = event;
+    },
+    async join() {
+      let event = announced && stillOn(announced) ? announced : null;
+      if (!event) {
+        try {
+          event = await options.calendar.findJoinableMeeting(now());
+        } catch (error) {
+          if (error instanceof GoogleNotConnectedError) {
+            return portuguese ? "O Google Calendar não está ligado. Diz «liga o calendário» primeiro." : "Google Calendar is not connected. Say \"connect my calendar\" first.";
+          }
+          throw error;
+        }
+      }
+      if (!event?.meetingUrl || !isMeetingUrl(event.meetingUrl)) {
+        return portuguese ? "Não encontrei nenhuma reunião com link a decorrer ou prestes a começar." : "I couldn't find a meeting with a call link in progress or about to start.";
+      }
+      await options.openUrl(event.meetingUrl);
+      const app = isGoogleMeetUrl(event.meetingUrl) ? "o Google Meet" : (portuguese ? "a videochamada" : "the call");
+      return portuguese ? `A abrir ${app}: ${event.summary}.` : `Opening ${isGoogleMeetUrl(event.meetingUrl) ? "Google Meet" : "the call"}: ${event.summary}.`;
+    },
+  };
+}
+
 export interface CalendarToolkitOptions {
   readonly auth: Pick<GoogleOAuth, "accessToken" | "isConnected">;
   readonly calendar: GoogleCalendarClient;
   readonly timeZone: string;
+  readonly joiner?: MeetingJoiner;
 }
 
 export function createCalendarToolkit(options: CalendarToolkitOptions): AssistantToolkit {
-  const { auth, calendar, timeZone } = options;
+  const { auth, calendar, timeZone, joiner } = options;
+  const tools = joiner ? [...CALENDAR_TOOLS, JOIN_MEETING_TOOL] : CALENDAR_TOOLS;
   return {
-    tools: async () => ((await auth.isConnected()) ? CALENDAR_TOOLS : []),
-    handles: (name) => CALENDAR_TOOLS.some((tool) => tool.function.name === name),
+    tools: async () => ((await auth.isConnected()) ? tools : []),
+    handles: (name) => tools.some((tool) => tool.function.name === name),
     async prompt() {
       if (!(await auth.isConnected())) {
         return "Google Calendar is available but not connected. If the user asks about their calendar, tell them to say \"liga o calendário\" (or \"connect my calendar\") to sign in.";
@@ -246,6 +362,7 @@ export function createCalendarToolkit(options: CalendarToolkitOptions): Assistan
           });
           return `Created: ${calendar.describe(created)}.`;
         }
+        if (name === "calendar_join_meeting" && joiner) return await joiner.join();
         return `Error: unknown tool ${name}`;
       } catch (error) {
         if (error instanceof GoogleNotConnectedError) return "Error: Google Calendar is no longer connected. Ask the user to say \"liga o calendário\".";

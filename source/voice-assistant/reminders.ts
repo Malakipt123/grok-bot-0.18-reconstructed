@@ -28,10 +28,13 @@ export interface EventRemindersOptions {
 
 export function reminderText(event: CalendarEvent, minutes: number, language: string): string {
   const portuguese = language.toLowerCase().startsWith("pt");
-  const where = event.location ? (portuguese ? `, em ${event.location}` : `, at ${event.location}`) : "";
-  if (minutes <= 0) return portuguese ? `Está a começar agora: ${event.summary}${where}.` : `Starting now: ${event.summary}${where}.`;
+  // A location that is only the call link is not worth reading out.
+  const place = event.location && !/^https?:\/\//i.test(event.location) ? event.location : null;
+  const where = place ? (portuguese ? `, em ${place}` : `, at ${place}`) : "";
+  const join = event.meetingUrl ? (portuguese ? " Diz «abre a reunião» para entrares." : " Say \"join the meeting\" to join.") : "";
+  if (minutes <= 0) return (portuguese ? `Está a começar agora: ${event.summary}${where}.` : `Starting now: ${event.summary}${where}.`) + join;
   const unit = portuguese ? (minutes === 1 ? "minuto" : "minutos") : (minutes === 1 ? "minute" : "minutes");
-  return portuguese ? `Daqui a ${minutes} ${unit} tens ${event.summary}${where}.` : `In ${minutes} ${unit} you have ${event.summary}${where}.`;
+  return (portuguese ? `Daqui a ${minutes} ${unit} tens ${event.summary}${where}.` : `In ${minutes} ${unit} you have ${event.summary}${where}.`) + join;
 }
 
 export class EventReminders {

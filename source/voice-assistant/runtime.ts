@@ -6,7 +6,7 @@ import { stripAudioTags, VoiceAssistant } from "./assistant.js";
 import type { VoiceAssistantConfig } from "./config.js";
 import { ElevenLabsClient } from "./elevenlabs.js";
 import { GrokClient } from "./grok.js";
-import { createCalendarToolkit, GoogleCalendarClient } from "./calendar.js";
+import { createCalendarToolkit, createMeetingJoiner, GoogleCalendarClient, isMeetingUrl } from "./calendar.js";
 import { GOOGLE_TOKEN_FILENAME, GoogleOAuth } from "./google-auth.js";
 import { MEMORY_FILENAME, MemoryStore } from "./memory.js";
 import { EventReminders, type Reminder } from "./reminders.js";
@@ -70,16 +70,30 @@ export async function createVoiceAssistantRuntime(
       ...(options.fetch ? { fetch: options.fetch } : {}),
       openUrl: async (url) => {
         if (!url.startsWith("https://accounts.google.com/")) throw new Error("Refusing to open an unexpected sign-in URL");
-        if (platform === "darwin") await run("open", [url]);
-        else if (platform === "win32") await run("explorer", [url]);
-        else await run("xdg-open", [url]);
+        await openInBrowser(url);
       },
     })
     : null;
   const calendar = google
     ? new GoogleCalendarClient({ auth: google, timeZone: config.timeZone, locale: config.language, ...(options.fetch ? { fetch: options.fetch } : {}) })
     : null;
-  const toolkits = google && calendar ? [createCalendarToolkit({ auth: google, timeZone: config.timeZone, calendar })] : [];
+  const openInBrowser = async (url: string) => {
+    if (platform === "darwin") await run("open", [url]);
+    else if (platform === "win32") await run("explorer", [url]);
+    else await run("xdg-open", [url]);
+  };
+  const joiner = calendar
+    ? createMeetingJoiner({
+      calendar,
+      language: config.language,
+      openUrl: async (url) => {
+        // Checked again here: whatever produced the URL, only video-call hosts are opened.
+        if (!isMeetingUrl(url)) throw new Error("Refusing to open a link that is not a known video-call host");
+        await openInBrowser(url);
+      },
+    })
+    : null;
+  const toolkits = google && calendar ? [createCalendarToolkit({ auth: google, timeZone: config.timeZone, calendar, ...(joiner ? { joiner } : {}) })] : [];
   const connectCalendar = () => {
     if (!google) {
       return portuguese
@@ -114,6 +128,9 @@ export async function createVoiceAssistantRuntime(
     ...(options.onMemoryError ? { onMemoryError: options.onMemoryError } : {}),
     toolkits,
     connectCalendar,
+    joinMeeting: async () => joiner?.join() ?? (portuguese
+      ? "Para abrir reuniões, liga primeiro o Google Calendar."
+      : "Connect Google Calendar first so I can find your meetings."),
     actions: {
       platform,
       run,
@@ -138,7 +155,10 @@ export async function createVoiceAssistantRuntime(
         isConnected: () => google.isConnected(),
         leadMinutes: config.reminderMinutes,
         language: config.language,
-        announce,
+        announce: (reminder) => {
+          joiner?.noteAnnounced(reminder.event);
+          announce(reminder);
+        },
         onError: (error) => options.onNotice?.(`${portuguese ? "Avisos do calendário" : "Calendar reminders"}: ${error instanceof Error ? error.message : String(error)}`),
       });
       reminders.start();
