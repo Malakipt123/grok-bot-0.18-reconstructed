@@ -1363,7 +1363,10 @@ test("desktop announcements speak when idle, wait during a conversation, never o
       }),
     });
     const { assistant } = await module.startDesktopVoiceAssistant(harness.deps);
-    const reminder = (id, text, startsInMs) => ({ event: { id, summary: id, start: new Date(Date.now() + startsInMs).toISOString(), end: "", allDay: false, location: null }, minutes: 10, text });
+    const reminder = (id, text, startsInMs) => {
+      const event = { id, summary: id, start: new Date(Date.now() + startsInMs).toISOString(), end: "", allDay: false, location: null };
+      return { text, title: `Jarvis · ${id}`, expiresAt: Date.parse(event.start), event };
+    };
 
     // Two reminders at once: spoken one after the other.
     announceReminder(reminder("a", "Daqui a 10 minutos tens Alfa.", 600_000));
@@ -1556,5 +1559,150 @@ test("calendar toolkit offers calendar_join_meeting to Grok when a joiner is con
     assert.ok(!(await withoutJoiner.tools()).some((tool) => tool.function.name === "calendar_join_meeting"));
   } finally {
     await dispose();
+  }
+});
+
+test("voice reminders fire on time, persist privately, survive a restart and catch up on missed ones", async () => {
+  const { module, temporary, dispose } = await loadModule("voice-reminders.ts");
+  try {
+    const { stat, readFile, writeFile } = await import("node:fs/promises");
+    const filePath = path.join(temporary, "jarvis", "reminders.json");
+    const heard = [];
+    const make = () => new module.VoiceReminders({ filePath, language: "pt", timeZone: "Europe/Lisbon", announce: (announcement) => heard.push(announcement) });
+
+    const reminders = make();
+    await reminders.start();
+    const soon = await reminders.add("ligar à Ana.", new Date(Date.now() + 80));
+    const later = await reminders.add("tirar o bolo", new Date(Date.now() + 3_600_000));
+    assert.deepEqual([soon.id, later.id], ["r1", "r2"]);
+    assert.equal(soon.text, "ligar à Ana", "trailing punctuation is trimmed");
+    assert.equal((await stat(filePath)).mode & 0o777, 0o600);
+    await assert.rejects(reminders.add("ontem", new Date(Date.now() - 5 * 60_000)), /already passed/);
+    await assert.rejects(reminders.add("   ", new Date(Date.now() + 1000)), /needs something/);
+
+    await waitFor(() => heard.length === 1);
+    assert.equal(heard[0].text, "Lembrete: ligar à Ana.");
+    assert.equal(heard[0].title, "Jarvis · Lembrete");
+    assert.ok(heard[0].expiresAt > Date.now(), "a plain reminder stays speakable for a while");
+    assert.deepEqual(reminders.pending.map((reminder) => reminder.id), ["r2"], "a fired reminder is removed");
+    reminders.stop();
+
+    // Restart: the pending reminder is still there and ids keep increasing.
+    const restarted = make();
+    await restarted.start();
+    assert.deepEqual(restarted.pending.map((reminder) => reminder.text), ["tirar o bolo"]);
+    assert.equal((await restarted.add("x", new Date(Date.now() + 3_600_000))).id, "r3");
+    assert.equal((await restarted.cancel("[r3]")).text, "x");
+    assert.equal(await restarted.cancel("r99"), null);
+    restarted.stop();
+
+    // Missed while Jarvis was closed: an hour late is still said, two days late is dropped.
+    const saved = JSON.parse(await readFile(filePath, "utf8"));
+    saved.reminders.push(
+      { id: "r10", text: "regar as plantas", at: new Date(Date.now() - 3_600_000).toISOString(), createdAt: new Date().toISOString() },
+      { id: "r11", text: "muito antigo", at: new Date(Date.now() - 48 * 3_600_000).toISOString(), createdAt: new Date().toISOString() },
+    );
+    await writeFile(filePath, JSON.stringify(saved));
+    heard.length = 0;
+    const catchUp = make();
+    await catchUp.start();
+    await waitFor(() => heard.length === 1);
+    assert.equal(heard[0].text, "Ficou por dizer um lembrete: regar as plantas.");
+    assert.deepEqual(catchUp.pending.map((reminder) => reminder.text), ["tirar o bolo"]);
+    catchUp.stop();
+  } finally {
+    await dispose();
+  }
+});
+
+test("snooze repeats the last announcement, recounts minutes for a meeting, and refuses when too late or nothing was said", async () => {
+  const { module, temporary, dispose } = await loadModule("voice-reminders.ts");
+  try {
+    const heard = [];
+    const reminders = new module.VoiceReminders({ filePath: path.join(temporary, "r.json"), language: "pt", timeZone: "Europe/Lisbon", announce: (announcement) => heard.push(announcement) });
+    await reminders.start();
+    assert.equal(await reminders.snooze(5), null, "nothing announced yet");
+
+    const reminder = { id: "r1", text: "ligar à Ana", at: new Date().toISOString(), createdAt: new Date().toISOString() };
+    reminders.noteAnnounced({ text: "Lembrete: ligar à Ana.", title: "t", expiresAt: Date.now() + 60_000, reminder });
+    assert.equal(await reminders.snooze(10), "Está bem, volto a avisar daqui a 10 minutos.");
+    const [snoozed] = reminders.pending;
+    assert.equal(snoozed.text, "ligar à Ana");
+    assert.ok(Math.abs(Date.parse(snoozed.at) - (Date.now() + 10 * 60_000)) < 5_000);
+    assert.equal(await reminders.snooze(5), null, "the same announcement is not snoozed twice");
+
+    const event = { id: "e1", summary: "Reunião com a Ana", start: new Date(Date.now() + 30 * 60_000).toISOString(), end: "", allDay: false, location: null, meetingUrl: "https://meet.google.com/aaa-bbbb-ccc" };
+    reminders.noteAnnounced({ text: "Daqui a 10 minutos…", title: "t", expiresAt: Date.parse(event.start), event });
+    assert.equal(await reminders.snooze(40), "Daqui a 40 minutos Reunião com a Ana já terá começado.");
+    assert.equal(await reminders.snooze(5), "Está bem, volto a avisar daqui a 5 minutos.");
+    const meeting = reminders.pending.find((entry) => entry.event);
+    assert.equal(meeting.event.id, "e1");
+    const text = module.voiceReminderText(meeting, "pt", Date.parse(event.start) - 25 * 60_000);
+    assert.equal(text, "Daqui a 25 minutos tens Reunião com a Ana. Diz «abre a reunião» para entrares.", "the re-announcement counts the minutes left again");
+    reminders.stop();
+  } finally {
+    await dispose();
+  }
+});
+
+test("reminder tools set, list and cancel in the user's time zone", async () => {
+  const { module, temporary, dispose } = await loadModule("voice-reminders.ts");
+  try {
+    const reminders = new module.VoiceReminders({ filePath: path.join(temporary, "r.json"), language: "pt", timeZone: "Europe/Lisbon", announce: () => {} });
+    const toolkit = reminders.toolkit();
+    assert.deepEqual((await toolkit.tools()).map((tool) => tool.function.name), ["reminder_set", "reminder_list", "reminder_cancel"]);
+    assert.match(await toolkit.prompt(), /Europe\/Lisbon/);
+    const year = new Date().getUTCFullYear() + 1;
+    const set = await toolkit.run("reminder_set", { text: "ligar à Ana", at: `${year}-07-01T17:00` });
+    assert.match(set, /^Set \[r1\] for /);
+    assert.equal(reminders.pending[0].at, `${year}-07-01T16:00:00.000Z`, "17:00 in Lisbon summer time is 16:00 UTC");
+    assert.equal(module.parseLocalTime(`${year}-12-01`, "Europe/Lisbon").toISOString(), `${year}-12-01T09:00:00.000Z`, "a bare date means 09:00 local");
+    assert.match(await toolkit.run("reminder_list", {}), /\[r1\] .*: ligar à Ana/);
+    assert.equal(await toolkit.run("reminder_cancel", { id: "r1" }), "Cancelled [r1] ligar à Ana.");
+    assert.equal(await toolkit.run("reminder_list", {}), "No reminders pending.");
+    await assert.rejects(toolkit.run("reminder_set", { text: "x", at: "amanhã às 5" }), /ISO 8601/);
+  } finally {
+    await dispose();
+  }
+});
+
+test("router sends snooze phrases to the local snooze and new reminders with a subject to Grok", async () => {
+  const { module, dispose } = await loadModule("intent-router.ts");
+  try {
+    assert.deepEqual(module.routeIntent("adia"), { kind: "snooze", minutes: 5 });
+    assert.deepEqual(module.routeIntent("Adia 10 minutos."), { kind: "snooze", minutes: 10 });
+    assert.deepEqual(module.routeIntent("lembra-me daqui a cinco minutos"), { kind: "snooze", minutes: 5 });
+    assert.deepEqual(module.routeIntent("lembra-me outra vez daqui a 15 min"), { kind: "snooze", minutes: 15 });
+    assert.deepEqual(module.routeIntent("remind me again in twenty minutes"), { kind: "snooze", minutes: 20 });
+    assert.deepEqual(module.routeIntent("snooze"), { kind: "snooze", minutes: 5 });
+    assert.deepEqual(module.routeIntent("lembra-me daqui a 20 minutos de tirar o bolo"), { kind: "llm" });
+    assert.deepEqual(module.routeIntent("lembra-me de ligar à Ana às 17h"), { kind: "llm" });
+  } finally {
+    await dispose();
+  }
+});
+
+test("end to end through the runtime: a voice reminder is announced, \"adia 5 minutos\" schedules it again, no Google needed", async () => {
+  const runtimeModule = await loadModule("runtime.ts");
+  try {
+    const profileDir = path.join(runtimeModule.temporary, "jarvis");
+    const runtime = await runtimeModule.module.createVoiceAssistantRuntime({
+      xaiApiKey: "x", xaiBaseUrl: "https://api.x.ai/v1", grokModel: "grok-4",
+      elevenLabsApiKey: "e", elevenLabsBaseUrl: "https://api.elevenlabs.io/v1", elevenLabsVoiceId: "v", elevenLabsTtsModel: "eleven_v3", elevenLabsSttModel: "scribe_v1",
+      language: "pt", profilePath: path.join(profileDir, "ASSISTANT.md"), historyLimit: 20, memoryEnabled: false, conversationTtlHours: 12,
+      googleClientId: null, googleClientSecret: null, timeZone: "Europe/Lisbon", reminderMinutes: 10,
+    }, { platform: "darwin", run: async () => {} });
+    assert.equal(runtime.google, null);
+    const heard = [];
+    const handle = runtime.startReminders((announcement) => heard.push(announcement.text));
+    assert.deepEqual(await runtime.assistant.handle("adia"), { text: "Não há nenhum aviso recente para adiar.", source: "local" });
+    await runtime.voiceReminders.add("beber água", new Date(Date.now() + 60));
+    await waitFor(() => heard.length === 1);
+    assert.equal(heard[0], "Lembrete: beber água.");
+    assert.deepEqual(await runtime.assistant.handle("adia 5 minutos"), { text: "Está bem, volto a avisar daqui a 5 minutos.", source: "local" });
+    assert.deepEqual(runtime.voiceReminders.pending.map((reminder) => reminder.text), ["beber água"]);
+    handle.stop();
+  } finally {
+    await runtimeModule.dispose();
   }
 });

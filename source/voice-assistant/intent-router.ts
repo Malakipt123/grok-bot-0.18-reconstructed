@@ -10,6 +10,7 @@ export type RoutedIntent =
   | { readonly kind: "remember"; readonly fact: string }
   | { readonly kind: "connect-calendar" }
   | { readonly kind: "join-meeting" }
+  | { readonly kind: "snooze"; readonly minutes: number }
   | { readonly kind: "llm" };
 
 const STOP = /^(stop|cancel|shut up|quiet|para|pára|cala-te|cancela|silêncio|chega)[.!]?$/iu;
@@ -21,6 +22,10 @@ const NOTE = /^(?:take a note|note|anota|toma nota)[:,]?\s+(.+)$/iu;
 const REMEMBER = /^(?:remember that|lembra-te (?:de )?que|memoriza que|não te esqueças (?:de )?que)[:,]?\s+(.{3,})$/iu;
 const CONNECT_CALENDAR = /^(?:(?:liga|ligar|conecta|conectar|associa)(?: o)?(?: meu)?(?: google)? calend[aá]rio(?: (?:do )?google)?|connect (?:my |the )?(?:google )?calendar)[.!]?$/iu;
 const JOIN_MEETING = /^(?:(?:abre|abrir|entra|entrar|junta-te|liga-me|vamos)(?: (?:na|à|a|o|no|para a))? (?:reuni[ãa]o|meet|google meet|chamada|videochamada)|join(?: the| my)? (?:meeting|call|meet)|open(?: the)? (?:meeting|meet|google meet))[.!]?$/iu;
+// "adia", "adia 10 minutos", "lembra-me daqui a 5 minutos": repeat the last announcement later.
+// "lembra-me daqui a 20 minutos de tirar o bolo" has a subject, so it is a new reminder for Grok.
+const SNOOZE = /^(?:adia|adiar|snooze|lembra-me (?:outra vez |de novo )?daqui a|volta a lembrar(?:-me)? daqui a|remind me (?:again )?in)(?:\s+(?:mais\s+)?(\d{1,4}|um|uma|dois|duas|três|cinco|dez|quinze|vinte|trinta|one|two|three|five|ten|fifteen|twenty|thirty)\s*(?:min(?:uto)?s?|minutes?)?)?[.!]?$/iu;
+const NUMBER_WORDS: Record<string, number> = { um: 1, uma: 1, one: 1, dois: 2, duas: 2, two: 2, "três": 3, three: 3, cinco: 5, five: 5, dez: 10, ten: 10, quinze: 15, fifteen: 15, vinte: 20, twenty: 20, trinta: 30, thirty: 30 };
 const URL_LIKE = /^(?:https?:\/\/)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:\/\S*)?$/i;
 
 export function routeIntent(transcript: string): RoutedIntent {
@@ -36,6 +41,11 @@ export function routeIntent(transcript: string): RoutedIntent {
   }
 
   if (CONNECT_CALENDAR.test(text)) return { kind: "connect-calendar" };
+  const snooze = SNOOZE.exec(text);
+  if (snooze) {
+    const amount = snooze[1]?.toLowerCase();
+    return { kind: "snooze", minutes: amount === undefined ? 5 : NUMBER_WORDS[amount] ?? Number(amount) };
+  }
   // Before OPEN, which would otherwise try to launch an app called "reunião".
   if (JOIN_MEETING.test(text)) return { kind: "join-meeting" };
 

@@ -158,7 +158,27 @@ A janela flutuante com o anel e a onda sonora.
   Usa o atalho com uma app em ecrã inteiro ou noutro desktop (Space).
   Esperado: A HUD aparece por cima dessa app.
 
-## 6. Google Calendar
+## 6. Lembretes por voz
+
+Funcionam sem Google Calendar.
+
+- [ ] **Lembrete com hora**
+  Diz «lembra-me de beber água daqui a 2 minutos».
+  Esperado: O Jarvis confirma a hora. Cerca de 2 minutos depois diz «Lembrete: beber água.» e /reminders deixa de o mostrar.
+
+- [ ] **Adiar um aviso**
+  Logo depois de um lembrete, diz «adia 1 minuto».
+  Esperado: Responde «Está bem, volto a avisar daqui a 1 minuto.» e repete o lembrete um minuto depois.
+
+- [ ] **Sobreviver a um reinício**
+  Cria um lembrete para daqui a 5 minutos, escreve /quit e volta a correr npm run voice.
+  Esperado: /reminders continua a mostrá-lo e é dito à hora certa.
+
+- [ ] **Cancelar**
+  Cria um lembrete e diz «cancela esse lembrete», ou usa /reminders cancel r1.
+  Esperado: Desaparece de /reminders e nunca é dito.
+
+## 7. Google Calendar
 
 Precisa do teu OAuth client de Desktop. Os passos estão em source/voice-assistant/README.md.
 
@@ -185,7 +205,7 @@ Precisa do teu OAuth client de Desktop. Os passos estão em source/voice-assista
   Em npm run voice, escreve /google disconnect.
   Esperado: O token é apagado e a app deixa de aparecer em myaccount.google.com/connections.
 
-## 7. Avisos e Google Meet
+## 8. Avisos e Google Meet
 
 Arranca com JARVIS_REMINDER_MINUTES=2 para não esperares 10 minutos.
 

@@ -66,6 +66,29 @@ leaves your machine except as context in Grok requests.
 - An unreadable `memory.json` is never overwritten. It is moved aside as
   `memory.json.corrupt-<timestamp>` and reported.
 
+## Voice reminders and snooze
+
+These work without Google Calendar.
+
+- **"Lembra-me de ligar à Ana às 17h"** or **"remind me to stretch in 20
+  minutes"**: Grok calls `reminder_set` with a local time in your time zone,
+  and Jarvis says "Lembrete: ligar à Ana." when it is due. Grok can also list
+  and cancel pending reminders ("o que tenho para me lembrares?", "cancela o
+  lembrete da Ana").
+- **"Adia"**, **"adia 10 minutos"** or **"lembra-me daqui a 5 minutos"**,
+  right after any announcement (a voice reminder, a routine or a calendar
+  reminder), repeats it that many minutes later. The default is 5 minutes. It
+  is handled locally, with no Grok call. A snoozed meeting reminder counts the
+  minutes left again ("Daqui a 5 minutos tens…"). Jarvis refuses to snooze past
+  the start of the meeting.
+- Reminders are kept in `reminders.json` (`0600`, atomic writes) next to
+  `ASSISTANT.md`, so they survive restarts. One missed while Jarvis was closed
+  is still said on the next start, as "Ficou por dizer um lembrete: …", if it
+  is at most 12 hours late. Older ones are dropped. They use the same
+  announcement queue as calendar reminders, so they never talk over you.
+- In the terminal, `/reminders` lists pending reminders and
+  `/reminders cancel r3` removes one.
+
 ## Google Calendar
 
 Jarvis can read your agenda and create events in your primary Google Calendar.
@@ -234,7 +257,8 @@ npm run voice
 
 Press **Enter** to start talking and **Enter** again to stop. You can also type
 a message. Replies print as they stream and are spoken sentence by sentence. Commands: `/mute`, `/routines`, `/run <routine>`, `/memory`,
-`/forget <id|all>`, `/google connect|status|disconnect`, `/help`, `/quit`.
+`/forget <id|all>`, `/reminders`, `/reminders cancel <id>`,
+`/google connect|status|disconnect`, `/help`, `/quit`.
 Pass `--mute` for text-only replies.
 
 | Variable | Default |
