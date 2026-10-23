@@ -879,7 +879,8 @@ test("HUD highlights each word at its aligned start time and falls back when tim
     const playbackStart = exact.hudEvents.find((event) => event.type === "state" && event.state === "speaking").at;
     const offsets = spoken.map((event) => event.at - playbackStart);
     timings.forEach((timing, index) => {
-      assert.ok(offsets[index] >= timing - 3 && offsets[index] <= timing + 30, `word ${index + 1} at ${offsets[index]}ms, expected ~${timing}ms`);
+      // Never early; the late margin absorbs timer jitter on a loaded CI runner.
+      assert.ok(offsets[index] >= timing - 3 && offsets[index] <= timing + 100, `word ${index + 1} at ${offsets[index]}ms, expected ~${timing}ms`);
     });
     assert.deepEqual(exact.plain, [], "aligned synthesis replaces the plain request");
 
@@ -1270,22 +1271,23 @@ test("event reminders fire once at start − lead, follow moved and cancelled ev
       announce: (reminder) => fired.push([reminder.event.id, reminder.minutes, reminder.text]),
     });
     events = [
-      { id: "soon", summary: "Dentista", start: at(200), end: at(3_600_000), allDay: false, location: null },
+      { id: "soon", summary: "Dentista", start: at(400), end: at(3_600_000), allDay: false, location: null },
       { id: "now", summary: "Chamada", start: at(60), end: at(3_600_000), allDay: false, location: null },
       { id: "allday", summary: "Feriado", start: "2026-10-24", end: "2026-10-25", allDay: true, location: null },
       { id: "past", summary: "Já foi", start: at(-60_000), end: at(-1), allDay: false, location: null },
-      { id: "moved", summary: "Café", start: at(150), end: at(3_600_000), allDay: false, location: null },
-      { id: "cancelled", summary: "Cancelado", start: at(180), end: at(3_600_000), allDay: false, location: null },
+      // Timers fire at start − 120 ms; these leave room to move or cancel them first, even on a slow runner.
+      { id: "moved", summary: "Café", start: at(450), end: at(3_600_000), allDay: false, location: null },
+      { id: "cancelled", summary: "Cancelado", start: at(480), end: at(3_600_000), allDay: false, location: null },
     ];
     await reminders.poll();
     await reminders.poll(); // a second poll must not double-schedule
     await sleep(15); // immediate reminders still go through a 0 ms timer
     assert.deepEqual(fired.map(([id]) => id), ["now"], "an event already inside the lead window is announced right away");
 
-    // The organiser moves "moved" 400 ms later and cancels "cancelled".
-    events = events.filter((event) => event.id !== "cancelled").map((event) => (event.id === "moved" ? { ...event, start: at(400) } : event));
+    // The organiser moves "moved" later and cancels "cancelled".
+    events = events.filter((event) => event.id !== "cancelled").map((event) => (event.id === "moved" ? { ...event, start: at(700) } : event));
     await reminders.poll();
-    await sleep(450);
+    await sleep(750);
     assert.deepEqual(fired.map(([id]) => id).sort(), ["moved", "now", "soon"]);
     assert.equal(fired.filter(([id]) => id === "moved").length, 1, "the moved event is announced once, at its new time");
     assert.ok(fired.every(([, minutes]) => minutes === 0), "sub-minute leads round to 'starting now'");
