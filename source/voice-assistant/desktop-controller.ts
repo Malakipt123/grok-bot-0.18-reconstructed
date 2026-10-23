@@ -1,6 +1,6 @@
 import { stripAudioTags } from "./assistant.js";
 import { AudioPlayer, pcmEnvelope, pcmFromWav, startRecording as startSystemRecording, type Recording, type RecordingOptions } from "./audio.js";
-import { AudioTagFilter, SpeechPipeline, type SpokenSentence } from "./speech-pipeline.js";
+import { AudioTagFilter, SpeechPipeline, type SpokenSentence, type SynthesizedSpeech } from "./speech-pipeline.js";
 import { loadVoiceAssistantConfig, type VoiceAssistantConfig } from "./config.js";
 import { createVoiceAssistantRuntime, type VoiceAssistantRuntime } from "./runtime.js";
 import { RoutineScheduler } from "./scheduler.js";
@@ -124,9 +124,12 @@ export async function startDesktopVoiceAssistant(deps: DesktopVoiceDeps): Promis
   };
 
   let spokenTimer: NodeJS.Timeout | null = null;
+  let wordTimers: NodeJS.Timeout[] = [];
   const stopSpoken = () => {
     if (spokenTimer) clearInterval(spokenTimer);
     spokenTimer = null;
+    for (const timer of wordTimers) clearTimeout(timer);
+    wordTimers = [];
   };
   let pipeline: SpeechPipeline | null = null;
   let abort: AbortController | null = null;
@@ -144,22 +147,48 @@ export async function startDesktopVoiceAssistant(deps: DesktopVoiceDeps): Promis
     }, ENVELOPE_WINDOW_MS);
   };
 
-  // Words light up evenly across each sentence's audio, which tracks speech closely enough for captions.
+  // Words light up at their exact start time when ElevenLabs returned alignment,
+  // otherwise spread evenly across the sentence's audio.
   const startSpoken = (wordsBefore: number, sentence: SpokenSentence, turn: number) => {
     stopSpoken();
     if (!hud) return;
+    const starts = sentence.wordStartsMs;
+    if (starts) {
+      // One timer per word, fired at the moment ElevenLabs says the word begins.
+      wordTimers = starts.map((startMs, index) => setTimeout(() => {
+        if (turn === generation) hud.update({ type: "spoken", words: wordsBefore + index + 1 });
+      }, startMs));
+      return;
+    }
     const startedAt = Date.now();
     let last = -1;
     const tick = () => {
+      if (turn !== generation) return stopSpoken();
       const fraction = sentence.durationMs > 0 ? Math.min(1, (Date.now() - startedAt) / sentence.durationMs) : 1;
       const words = wordsBefore + Math.min(sentence.words, Math.ceil(fraction * sentence.words));
-      if (turn !== generation) return stopSpoken();
       if (words !== last) hud.update({ type: "spoken", words });
       last = words;
       if (fraction >= 1) stopSpoken();
     };
     tick();
     spokenTimer = setInterval(tick, SPOKEN_TICK_MS);
+  };
+
+  // Word timing needs /with-timestamps; if that endpoint is refused once, plain synthesis is used from then on.
+  let timestampsAvailable = Boolean(hud) && typeof runtime.voice.synthesizeWithTimestamps === "function";
+  const synthesize = async (text: string, previousText: string, signal: AbortSignal): Promise<SynthesizedSpeech> => {
+    if (timestampsAvailable) {
+      try {
+        return await runtime.voice.synthesizeWithTimestamps(text, { previousText, signal });
+      } catch (error) {
+        // Only a client error (endpoint or plan refuses timestamps) disables them; outages and rate limits are real failures.
+        const status = (error as { status?: unknown } | null)?.status;
+        if (typeof status !== "number" || status < 400 || status >= 500 || status === 429) throw error;
+        timestampsAvailable = false;
+        deps.reportFailure("word-timestamps", error);
+      }
+    }
+    return runtime.voice.synthesize(text, { previousText, signal });
   };
 
   /**
@@ -171,7 +200,7 @@ export async function startDesktopVoiceAssistant(deps: DesktopVoiceDeps): Promis
     abort = controller;
     let wordsBefore = 0;
     const speech = new SpeechPipeline({
-      synthesize: (text, context) => runtime.voice.synthesize(text, { previousText: context.previousText, signal: controller.signal }),
+      synthesize: (text, context) => synthesize(text, context.previousText, controller.signal),
       play: (wav, onStart) => player.play(wav, onStart),
       onSentenceStart: (sentence) => {
         if (turn !== generation) return;

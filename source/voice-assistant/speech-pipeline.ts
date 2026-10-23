@@ -1,4 +1,5 @@
 import { pcmFromWav } from "./audio.js";
+import type { SpeechAlignment } from "./elevenlabs.js";
 
 // Streaming speech: Grok's token deltas are cut into sentences, each sentence
 // is synthesised as soon as it is complete, and playback runs in order while
@@ -90,21 +91,68 @@ export class AudioTagFilter {
   }
 }
 
+const AUDIO_TAG = /\[[^\]\n]{1,30}\]/g;
+
 export function displayWords(text: string): string[] {
-  return text.replace(/\[[^\]\n]{1,30}\]/g, " ").split(/\s+/).filter(Boolean);
+  return text.replace(AUDIO_TAG, " ").split(/\s+/).filter(Boolean);
 }
+
+/**
+ * Start time (ms) of each displayWords(text) entry, from ElevenLabs character
+ * alignment. Returns null when the alignment does not describe this text, so
+ * callers can fall back to spreading words evenly.
+ */
+export function alignWordStarts(text: string, alignment: SpeechAlignment | null): number[] | null {
+  if (!alignment || alignment.characters.length === 0) return null;
+  // Matched by visible word count rather than exact text: models may normalise
+  // whitespace or leave audio tags out of the alignment.
+  const aligned = alignment.characters.join("");
+  // Characters inside [audio tags] are performed, never shown, so they separate words like spaces do.
+  const hidden = new Uint8Array(alignment.characters.length);
+  const offsets: number[] = [];
+  let position = 0;
+  for (const character of alignment.characters) {
+    offsets.push(position);
+    position += character.length;
+  }
+  const characterAt = (offset: number) => {
+    let low = 0, high = offsets.length - 1;
+    while (low < high) {
+      const mid = (low + high + 1) >> 1;
+      if ((offsets[mid] ?? 0) <= offset) low = mid; else high = mid - 1;
+    }
+    return low;
+  };
+  for (const match of aligned.matchAll(AUDIO_TAG)) {
+    const start = match.index ?? 0;
+    for (let index = characterAt(start); index <= characterAt(start + match[0].length - 1); index += 1) hidden[index] = 1;
+  }
+  const starts: number[] = [];
+  let inWord = false;
+  alignment.characters.forEach((character, index) => {
+    const separator = hidden[index] === 1 || /^\s*$/.test(character);
+    if (!separator && !inWord) starts.push(Math.max(0, (alignment.characterStartTimesSeconds[index] ?? 0) * 1000));
+    inWord = !separator;
+  });
+  return starts.length === displayWords(text).length ? starts : null;
+}
+
+/** What a synthesiser returns: bare WAV bytes, or WAV with character timing. */
+export type SynthesizedSpeech = Uint8Array | { readonly wav: Uint8Array; readonly alignment: SpeechAlignment | null };
 
 export interface SpokenSentence {
   readonly index: number;
   readonly text: string;
   /** Visible words in this sentence, for karaoke-style highlighting. */
   readonly words: number;
+  /** Exact start of each visible word in ms, when the synthesiser provided alignment. */
+  readonly wordStartsMs: readonly number[] | null;
   readonly durationMs: number;
   readonly wav: Uint8Array;
 }
 
 export interface SpeechPipelineOptions {
-  readonly synthesize: (text: string, context: { readonly previousText: string }) => Promise<Uint8Array>;
+  readonly synthesize: (text: string, context: { readonly previousText: string }) => Promise<SynthesizedSpeech>;
   readonly play: (wav: Uint8Array, onStart: () => void) => Promise<void>;
   readonly onSentenceStart?: (sentence: SpokenSentence) => void;
   /** Concurrent TTS requests; ElevenLabs plans cap concurrency, so keep this small. */
@@ -158,11 +206,13 @@ export class SpeechPipeline {
     this.#playback = this.#playback.then(async () => {
       if (this.#cancelled || this.#error) return;
       try {
-        const wav = await audio;
+        const speech = await audio;
         if (this.#cancelled) return;
+        const wav = speech instanceof Uint8Array ? speech : speech.wav;
+        const wordStartsMs = speech instanceof Uint8Array ? null : alignWordStarts(text, speech.alignment);
         const decoded = pcmFromWav(wav);
         const durationMs = decoded ? (decoded.pcm.length / 2 / decoded.sampleRate) * 1000 : 0;
-        const sentence: SpokenSentence = { index, text, words: displayWords(text).length, durationMs, wav };
+        const sentence: SpokenSentence = { index, text, words: displayWords(text).length, wordStartsMs, durationMs, wav };
         await this.#options.play(wav, () => {
           if (!this.#cancelled) this.#options.onSentenceStart?.(sentence);
         });

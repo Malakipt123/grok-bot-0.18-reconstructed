@@ -11,6 +11,24 @@ export interface SynthesizeOptions {
 
 const STITCHING_MODELS = /^eleven_(multilingual_v2|turbo|flash)/;
 
+/** Per-character timing for the text that was sent, as returned by `/with-timestamps`. */
+export interface SpeechAlignment {
+  readonly characters: readonly string[];
+  readonly characterStartTimesSeconds: readonly number[];
+}
+
+export interface TimedSpeech {
+  readonly wav: Uint8Array;
+  readonly alignment: SpeechAlignment | null;
+}
+
+export class ElevenLabsHttpError extends Error {
+  override readonly name = "ElevenLabsHttpError";
+  constructor(readonly status: number, message: string) {
+    super(message);
+  }
+}
+
 export interface ElevenLabsClientOptions {
   readonly apiKey: string;
   readonly baseUrl: string;
@@ -36,9 +54,31 @@ export class ElevenLabsClient {
    * it is only sent to models that support request stitching.
    */
   async synthesize(text: string, options: SynthesizeOptions = {}): Promise<Uint8Array> {
+    const response = await this.#requestSpeech("", text, options);
+    return wavFromPcm(new Uint8Array(await response.arrayBuffer()), TTS_SAMPLE_RATE);
+  }
+
+  /** Like synthesize(), plus the start time of every character, for word-exact captions. */
+  async synthesizeWithTimestamps(text: string, options: SynthesizeOptions = {}): Promise<TimedSpeech> {
+    const response = await this.#requestSpeech("/with-timestamps", text, options);
+    const body = (await response.json()) as {
+      audio_base64?: string;
+      alignment?: { characters?: string[]; character_start_times_seconds?: number[] } | null;
+    };
+    if (typeof body.audio_base64 !== "string") throw new Error("ElevenLabs returned no audio");
+    const pcm = new Uint8Array(Buffer.from(body.audio_base64, "base64"));
+    const characters = body.alignment?.characters;
+    const starts = body.alignment?.character_start_times_seconds;
+    const alignment = Array.isArray(characters) && Array.isArray(starts) && characters.length === starts.length
+      ? { characters, characterStartTimesSeconds: starts }
+      : null;
+    return { wav: wavFromPcm(pcm, TTS_SAMPLE_RATE), alignment };
+  }
+
+  async #requestSpeech(suffix: string, text: string, options: SynthesizeOptions): Promise<Response> {
     const { previousText, signal } = options;
     const stitching = previousText && STITCHING_MODELS.test(this.#options.ttsModel) ? { previous_text: previousText } : {};
-    const url = `${this.#options.baseUrl}/text-to-speech/${encodeURIComponent(this.#options.voiceId)}?output_format=pcm_${TTS_SAMPLE_RATE}`;
+    const url = `${this.#options.baseUrl}/text-to-speech/${encodeURIComponent(this.#options.voiceId)}${suffix}?output_format=pcm_${TTS_SAMPLE_RATE}`;
     const response = await this.#fetch(url, {
       method: "POST",
       headers: { "xi-api-key": this.#options.apiKey, "content-type": "application/json" },
@@ -46,9 +86,9 @@ export class ElevenLabsClient {
       ...(signal ? { signal } : {}),
     });
     if (!response.ok) {
-      throw new Error(`ElevenLabs TTS failed (${response.status}): ${await safeText(response)}`);
+      throw new ElevenLabsHttpError(response.status, `ElevenLabs TTS failed (${response.status}): ${await safeText(response)}`);
     }
-    return wavFromPcm(new Uint8Array(await response.arrayBuffer()), TTS_SAMPLE_RATE);
+    return response;
   }
 
   async transcribe(audio: Uint8Array, filename = "speech.wav", signal?: AbortSignal): Promise<string> {

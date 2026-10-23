@@ -767,3 +767,138 @@ test("an interrupt during transcription never reaches Grok", async () => {
     await dispose();
   }
 });
+
+function alignmentFor(text, startsByWord, includeTags = true) {
+  // One entry per character; every character of a word shares a time just after the word's start.
+  const characters = [];
+  const starts = [];
+  let word = -1;
+  let inWord = false;
+  const source = includeTags ? text : text.replace(/\[[^\]\n]{1,30}\]/g, "");
+  let inTag = false;
+  for (const character of source) {
+    if (character === "[") inTag = true;
+    const separator = inTag || /\s/.test(character);
+    if (!separator && !inWord) word += 1;
+    inWord = !separator;
+    characters.push(character);
+    starts.push(separator ? 0 : (startsByWord[word] ?? 0) / 1000 + 0.001 * (characters.length % 3));
+    if (character === "]") inTag = false;
+  }
+  return { characters, characterStartTimesSeconds: starts };
+}
+
+test("ElevenLabs with-timestamps returns WAV audio and character alignment", async () => {
+  const { module, dispose } = await loadModule("elevenlabs.ts");
+  try {
+    const seen = [];
+    const client = new module.ElevenLabsClient({
+      apiKey: "k", baseUrl: "https://api.elevenlabs.io/v1", voiceId: "v", ttsModel: "eleven_v3", sttModel: "scribe_v1", language: "pt",
+      fetch: async (url, init) => {
+        seen.push({ url, body: JSON.parse(init.body) });
+        if (url.includes("broken")) return new Response("nope", { status: 404 });
+        return Response.json({
+          audio_base64: Buffer.from([7, 8, 9, 10]).toString("base64"),
+          alignment: { characters: ["O", "l", "á"], character_start_times_seconds: [0, 0.05, 0.1], character_end_times_seconds: [0.05, 0.1, 0.2] },
+        });
+      },
+    });
+    const speech = await client.synthesizeWithTimestamps("Olá");
+    assert.equal(seen[0].url, "https://api.elevenlabs.io/v1/text-to-speech/v/with-timestamps?output_format=pcm_22050");
+    assert.deepEqual(seen[0].body, { text: "Olá", model_id: "eleven_v3" });
+    assert.deepEqual([...speech.wav.subarray(44)], [7, 8, 9, 10]);
+    assert.deepEqual(speech.alignment, { characters: ["O", "l", "á"], characterStartTimesSeconds: [0, 0.05, 0.1] });
+
+    const broken = new module.ElevenLabsClient({ apiKey: "k", baseUrl: "https://broken", voiceId: "v", ttsModel: "m", sttModel: "s", language: "pt", fetch: async () => new Response("nope", { status: 404 }) });
+    await assert.rejects(broken.synthesizeWithTimestamps("x"), (error) => error.status === 404);
+  } finally {
+    await dispose();
+  }
+});
+
+test("character alignment maps to visible word start times, with or without audio tags", async () => {
+  const { module, dispose } = await loadModule("speech-pipeline.ts");
+  try {
+    const text = "[laughs] Olá, Tony.  Tudo[sighs]bem?";
+    const words = module.displayWords(text);
+    assert.deepEqual(words, ["Olá,", "Tony.", "Tudo", "bem?"]);
+    const starts = [120, 480, 900, 1300];
+    const round = (values) => values?.map((value) => Math.round(value / 10) * 10);
+    assert.deepEqual(round(module.alignWordStarts(text, alignmentFor(text, starts))), starts);
+    // An alignment that leaves tags out still lines up when the tags sat between spaces…
+    const spaced = "[laughs] Olá, Tony. [sighs] Tudo bem?";
+    assert.deepEqual(round(module.alignWordStarts(spaced, alignmentFor(spaced, starts, false))), starts);
+    // …but "Tudo[sighs]bem" would collapse into one word there, so it falls back instead of guessing.
+    assert.equal(module.alignWordStarts(text, alignmentFor(text, starts, false)), null);
+    assert.equal(module.alignWordStarts(text, null), null);
+    assert.equal(module.alignWordStarts(text, { characters: ["O", "l", "á"], characterStartTimesSeconds: [0, 0.1, 0.2] }), null, "a word-count mismatch falls back");
+    assert.equal(module.alignWordStarts(text, { characters: [], characterStartTimesSeconds: [] }), null);
+  } finally {
+    await dispose();
+  }
+});
+
+test("HUD highlights each word at its aligned start time and falls back when timestamps are refused", async () => {
+  const { module, dispose } = await loadModule("desktop-controller.ts");
+  try {
+    const sentence = "Um dois três quatro.";
+    const timings = [0, 120, 260, 420];
+    const run = async (synthesizeWithTimestamps, expectSpeech = true) => {
+      const hudEvents = [];
+      const plain = [];
+      const harness = desktopHarness({
+        hud: { update: (event) => hudEvents.push({ ...event, at: Date.now() }), dispose: () => {} },
+        createRuntime: async () => ({
+          profile: { persona: "", capabilities: "", routines: [] },
+          runRoutine: async () => "",
+          voice: {
+            transcribe: async () => "conta",
+            synthesize: async (text) => { plain.push(text); return wavOf(600); },
+            synthesizeWithTimestamps,
+          },
+          assistant: { handle: async (_text, options) => { options.onText(sentence); return { text: sentence, source: "grok" }; } },
+        }),
+      });
+      const { assistant } = await module.startDesktopVoiceAssistant(harness.deps);
+      await assistant.toggle();
+      const turn = assistant.toggle();
+      if (expectSpeech) {
+        await waitFor(() => assistant.state === "speaking");
+        await new Promise((resolve) => setTimeout(resolve, 520));
+        harness.finishPlayback();
+      }
+      await turn;
+      const finalState = assistant.state;
+      assistant.dispose();
+      return { hudEvents, plain, finalState, failures: harness.events.filter((event) => event[0] === "failure") };
+    };
+
+    const exact = await run(async (text) => ({ wav: wavOf(600), alignment: alignmentFor(text, timings) }));
+    const spoken = exact.hudEvents.filter((event) => event.type === "spoken" && event.words > 0 && event.words < 1_000_000);
+    assert.deepEqual(spoken.map((event) => event.words), [1, 2, 3, 4]);
+    const playbackStart = exact.hudEvents.find((event) => event.type === "state" && event.state === "speaking").at;
+    const offsets = spoken.map((event) => event.at - playbackStart);
+    timings.forEach((timing, index) => {
+      assert.ok(offsets[index] >= timing - 3 && offsets[index] <= timing + 30, `word ${index + 1} at ${offsets[index]}ms, expected ~${timing}ms`);
+    });
+    assert.deepEqual(exact.plain, [], "aligned synthesis replaces the plain request");
+
+    let timestampCalls = 0;
+    const refused = await run(async () => {
+      timestampCalls += 1;
+      throw Object.assign(new Error("timestamps not available"), { status: 403 });
+    });
+    assert.equal(timestampCalls, 1);
+    assert.deepEqual(refused.plain, [sentence], "falls back to plain synthesis");
+    assert.equal(refused.failures.length, 1);
+    assert.equal(refused.failures[0][1], "word-timestamps");
+    assert.ok(refused.hudEvents.some((event) => event.type === "spoken" && event.words === 4), "even spreading still highlights every word");
+
+    const outage = await run(async () => { throw Object.assign(new Error("server down"), { status: 503 }); }, false);
+    assert.deepEqual(outage.plain, [], "server errors are not mistaken for an unsupported endpoint");
+    assert.equal(outage.failures[0][1], "turn");
+    assert.equal(outage.finalState, "idle");
+  } finally {
+    await dispose();
+  }
+});

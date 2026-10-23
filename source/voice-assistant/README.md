@@ -58,7 +58,8 @@ Then:
 - Replies **stream**. Grok's tokens appear in the HUD word by word as they
   arrive, and each finished sentence is sent to ElevenLabs while Grok is still
   writing the next one. Jarvis starts talking after the first sentence instead
-  of waiting for the whole answer. Words light up as they are spoken:
+  of waiting for the whole answer. Each word lights up exactly when it is
+  spoken, using ElevenLabs character timestamps:
 
   ![Streaming reply: spoken words bright, upcoming words dimmed](../../docs/assets/jarvis-hud-streaming.png)
 - A floating **HUD** appears at the top of the screen with an arc-reactor ring
@@ -98,8 +99,21 @@ and it may cut the first sentence at a comma so the voice starts sooner.
 split across deltas; ElevenLabs still receives them. `SpeechPipeline` runs at
 most two TTS requests at a time and plays sentences strictly in order. For
 models that support it, it passes the earlier text as `previous_text` so
-intonation carries across sentences. Highlighted words are spread evenly over
-each sentence's audio duration.
+intonation carries across sentences.
+
+Word-exact captions: with the HUD on, each sentence is synthesised through
+ElevenLabs `/with-timestamps`, which returns the same PCM audio plus the start
+time of every character. `alignWordStarts` maps those times to the visible
+words. Characters inside `[audio tags]` count as separators, and the mapping
+works whether or not the alignment includes the tags. Each word then gets its
+own timer and lights up at the millisecond it begins.
+
+If the timing does not match the visible words (for example, `Tudo[sighs]bem`
+in an alignment that drops the tag), that sentence falls back to spreading the
+words evenly. If the endpoint itself is refused with a 4xx error (other than
+429), timestamps are switched off for the session, the failure is reported
+once, and plain synthesis is used. Outages and rate limits are reported as
+normal errors.
 
 Recording streams raw PCM from sox/ffmpeg into Node, and ElevenLabs returns
 raw PCM (`pcm_22050`). The waveform is computed from the same audio you hear,
