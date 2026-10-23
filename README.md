@@ -1,5 +1,7 @@
 # Grok Bot 0.18 — reconstructed and extended
 
+[![repository checks](https://github.com/Malakipt123/grok-bot-0.18-reconstructed/actions/workflows/check.yml/badge.svg?branch=main)](https://github.com/Malakipt123/grok-bot-0.18-reconstructed/actions/workflows/check.yml)
+
 ![Grok Bot Router settings with Codex selected and local usage totals](docs/assets/router-settings.png)
 
 This repository is an unofficial, source-oriented reconstruction of the
