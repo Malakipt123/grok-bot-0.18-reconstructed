@@ -13,6 +13,19 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      # The preserved installers are Git LFS objects; tests hash the real files.
+      # They are cached by the manifest that pins their SHA-256, so CI downloads
+      # them only when they change instead of spending LFS bandwidth every run.
+      - name: Restore Git LFS objects
+        uses: actions/cache@v4
+        with:
+          path: .git/lfs
+          key: lfs-${{ hashFiles('research-archives/**/artifacts.json') }}
+      # A global install also gives the publication check's fresh export repo the LFS filters.
+      - name: Fetch Git LFS objects
+        run: |
+          git lfs install
+          git lfs pull
       - uses: actions/setup-node@v4
         with:
           node-version: 26.5.0
