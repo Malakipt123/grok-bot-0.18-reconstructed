@@ -5,8 +5,8 @@ import path from "node:path";
 
 // Audio I/O shells out to tools that are usually already installed, so the
 // assistant needs no native Node modules: sox or ffmpeg to record, afplay /
-// ffplay / aplay to play. Audio stays raw 16-bit PCM in Node so the HUD can
-// draw a live waveform from it.
+// ffplay / aplay to play, PowerShell's SoundPlayer on Windows. Audio stays raw
+// 16-bit PCM in Node so the HUD can draw a live waveform from it.
 
 export const RECORDING_SAMPLE_RATE = 16_000;
 
@@ -25,24 +25,71 @@ export function toolEnv(env: NodeJS.ProcessEnv = process.env, platform = process
 }
 
 export function hasCommand(file: string): boolean {
-  const probe = process.platform === "win32" ? spawnSync("where", [file]) : spawnSync("sh", ["-c", 'command -v "$1"', "sh", file], { env: toolEnv() });
+  const probe = process.platform === "win32" ? spawnSync("where", [file], { windowsHide: true }) : spawnSync("sh", ["-c", 'command -v "$1"', "sh", file], { env: toolEnv() });
   return probe.status === 0;
 }
 
+/** Arguments that run a PowerShell script without any quoting by Node or cmd.exe. */
+export function powershellArgs(script: string): string[] {
+  return ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")];
+}
+
+/** A PowerShell single-quoted literal; inside one, only the quote itself is special. */
+export function powershellString(value: string): string {
+  return `'${value.replace(/['\u2018\u2019\u201a\u201b]/g, "$&$&")}'`;
+}
+
+/** Audio input device names from `ffmpeg -list_devices true -f dshow -i dummy` (stderr). */
+export function parseDshowAudioDevices(output: string): string[] {
+  const devices: string[] = [];
+  let audioSection = false;
+  for (const line of output.split(/\r?\n/)) {
+    if (/DirectShow audio devices/i.test(line)) audioSection = true;
+    else if (/DirectShow video devices/i.test(line)) audioSection = false;
+    if (/Alternative name/i.test(line)) continue;
+    const match = /"([^"]+)"\s*(\((audio|video|none)\))?\s*$/.exec(line);
+    if (!match?.[1]) continue;
+    // Newer ffmpeg tags each device; older builds group them under section headers.
+    if (match[3] ? match[3] === "audio" : audioSection) devices.push(match[1]);
+  }
+  return devices;
+}
+
+// Probing takes a few hundred ms and blocks, so it runs once; a miss is retried next time.
+let detectedMicrophone: string | null = null;
+
+/**
+ * The microphone ffmpeg records from on Windows: JARVIS_MIC, else the first
+ * DirectShow audio device (normally the system default microphone).
+ */
+export function windowsMicrophone(env: NodeJS.ProcessEnv = process.env): string | null {
+  const configured = env.JARVIS_MIC?.trim();
+  if (configured) return configured;
+  if (detectedMicrophone) return detectedMicrophone;
+  const probe = spawnSync("ffmpeg", ["-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"], { encoding: "utf8", timeout: 10_000, windowsHide: true });
+  detectedMicrophone = parseDshowAudioDevices(`${probe.stderr ?? ""}`)[0] ?? null;
+  return detectedMicrophone;
+}
+
 /** Records mono s16le PCM at RECORDING_SAMPLE_RATE to stdout. */
-export function recorderCommand(platform = process.platform, available = hasCommand): AudioCommand | null {
+export function recorderCommand(platform = process.platform, available = hasCommand, microphone = windowsMicrophone): AudioCommand | null {
   const rate = String(RECORDING_SAMPLE_RATE);
-  if (available("sox")) return { file: "sox", args: ["-q", "-d", "-t", "raw", "-r", rate, "-c", "1", "-b", "16", "-e", "signed-integer", "-"] };
-  if (!available("ffmpeg")) return null;
+  // On Windows ffmpeg comes first: sox's Windows build often ships without a working default device.
+  if (platform !== "win32" && available("sox")) return { file: "sox", args: ["-q", "-d", "-t", "raw", "-r", rate, "-c", "1", "-b", "16", "-e", "signed-integer", "-"] };
+  if (!available("ffmpeg")) return platform === "win32" && available("sox") ? { file: "sox", args: ["-q", "-t", "waveaudio", "default", "-t", "raw", "-r", rate, "-c", "1", "-b", "16", "-e", "signed-integer", "-"] } : null;
+  const device = platform === "win32" ? microphone() : null;
   const input =
     platform === "darwin" ? ["-f", "avfoundation", "-i", ":0"]
     : platform === "linux" ? ["-f", "pulse", "-i", "default"]
+    : device ? ["-f", "dshow", "-i", `audio=${device}`]
     : null;
   return input ? { file: "ffmpeg", args: ["-loglevel", "error", ...input, "-ac", "1", "-ar", rate, "-f", "s16le", "-"] } : null;
 }
 
 export function playerCommand(input: string, platform = process.platform, available = hasCommand): AudioCommand | null {
   if (platform === "darwin") return { file: "afplay", args: [input] };
+  // Built into every Windows install; plays WAV synchronously so the process lives as long as the audio.
+  if (platform === "win32") return { file: "powershell.exe", args: powershellArgs(`(New-Object System.Media.SoundPlayer ${powershellString(input)}).PlaySync()`) };
   if (available("ffplay")) return { file: "ffplay", args: ["-loglevel", "error", "-nodisp", "-autoexit", input] };
   if (available("aplay")) return { file: "aplay", args: ["-q", input] };
   return null;
@@ -107,8 +154,12 @@ export interface RecordingOptions {
 
 export async function startRecording(options: RecordingOptions = {}): Promise<Recording> {
   const command = recorderCommand();
-  if (!command) throw new Error("No recorder found. Install sox (brew install sox) or ffmpeg.");
-  const child = spawn(command.file, [...command.args], { stdio: ["pipe", "pipe", "ignore"], env: toolEnv() });
+  if (!command) {
+    throw new Error(process.platform === "win32"
+      ? "No microphone recorder found. Install ffmpeg (winget install Gyan.FFmpeg), or set JARVIS_MIC to your microphone's name."
+      : "No recorder found. Install sox (brew install sox) or ffmpeg.");
+  }
+  const child = spawn(command.file, [...command.args], { stdio: ["pipe", "pipe", "ignore"], env: toolEnv(), windowsHide: true });
   const chunks: Buffer[] = [];
   child.stdout?.on("data", (chunk: Buffer) => {
     chunks.push(chunk);
@@ -146,7 +197,7 @@ export class AudioPlayer {
       await writeFile(file, wav);
       const command = playerCommand(file);
       if (!command) throw new Error("No audio player found. Install ffmpeg (ffplay) or alsa-utils (aplay).");
-      const player = spawn(command.file, [...command.args], { stdio: "ignore", env: toolEnv() });
+      const player = spawn(command.file, [...command.args], { stdio: "ignore", env: toolEnv(), windowsHide: true });
       child = player;
       this.#current = player;
       await new Promise<void>((resolve, reject) => {

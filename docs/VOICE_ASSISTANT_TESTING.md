@@ -228,3 +228,28 @@ Arranca com JARVIS_REMINDER_MINUTES=2 para não esperares 10 minutos.
 - [ ] **Link estranho não abre**
   Num evento sem Meet, põe na descrição https://meet.google.com.example.com/x e diz «abre a reunião» durante esse evento.
   Esperado: Não abre nada e responde que não encontrou reunião com link.
+
+## 9. Windows
+
+Segue primeiro os passos de [JARVIS_WINDOWS.md](JARVIS_WINDOWS.md).
+
+- [ ] **Arranque**
+  Corre npm run jarvis num PowerShell novo.
+  Esperado: Aparece o anel na barra de tarefas e a notificação «Ready. Press Control+Alt+Space to talk.».
+
+- [ ] **Falar**
+  Carrega em Ctrl+Alt+Espaço, diz «que horas são?» e carrega outra vez.
+  Esperado: Ouves Speech On e Speech Off, a HUD aparece e o Jarvis diz as horas em voz alta.
+
+- [ ] **Microfone escolhido**
+  Define JARVIS_MIC com o nome de outro microfone, abre um terminal novo e repete.
+  Esperado: Grava desse microfone.
+
+- [ ] **Ações**
+  Diz «abre o Notepad» e depois «volume a 20».
+  Esperado: O Bloco de Notas abre, sem janelas pretas de consola, e o volume fica em 20 %.
+
+- [ ] **Iniciar com o sistema**
+  No menu do ícone, ativa Iniciar com o sistema e reinicia a sessão do Windows.
+  Esperado: O Jarvis arranca sozinho e o atalho funciona.
+

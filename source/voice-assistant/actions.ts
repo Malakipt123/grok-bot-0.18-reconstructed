@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 
+import { powershellArgs, powershellString } from "./audio.js";
 import type { GrokTool } from "./grok.js";
 
 /** Runs a program with argv only; actions never go through a shell. */
@@ -9,7 +10,7 @@ export type CommandRunner = (file: string, args: readonly string[]) => Promise<v
 
 export const runCommand: CommandRunner = (file, args) =>
   new Promise((resolve, reject) => {
-    execFile(file, [...args], { timeout: 15_000 }, (error) => (error ? reject(error) : resolve()));
+    execFile(file, [...args], { timeout: 15_000, windowsHide: true }, (error) => (error ? reject(error) : resolve()));
   });
 
 export interface ActionContext {
@@ -51,7 +52,8 @@ export async function executeAction(name: ActionName, args: Record<string, unkno
       const app = String(args.name ?? "").trim();
       if (!APP_NAME.test(app)) throw new Error(`Refusing to open an app with an unexpected name: ${JSON.stringify(app)}`);
       if (context.platform === "darwin") await context.run("open", ["-a", app]);
-      else if (context.platform === "win32") await context.run("cmd", ["/c", "start", "", app]);
+      // Not `cmd /c start`: cmd.exe would treat "&" in the name as a command separator.
+      else if (context.platform === "win32") await context.run("powershell.exe", powershellArgs(`Start-Process -FilePath ${powershellString(app)}`));
       else await context.run("gtk-launch", [app.toLowerCase()]);
       return `Opened ${app}.`;
     }
@@ -68,6 +70,8 @@ export async function executeAction(name: ActionName, args: Record<string, unkno
       if (!Number.isFinite(level) || level < 0 || level > 100) throw new Error("Volume must be between 0 and 100");
       if (context.platform === "darwin") await context.run("osascript", ["-e", `set volume output volume ${level}`]);
       else if (context.platform === "linux") await context.run("pactl", ["set-sink-volume", "@DEFAULT_SINK@", `${level}%`]);
+      // Windows has no volume CLI: each volume key moves 2 %, so go to 0 and step back up.
+      else if (context.platform === "win32") await context.run("powershell.exe", powershellArgs(`$s = New-Object -ComObject WScript.Shell; for ($i = 0; $i -lt 50; $i++) { $s.SendKeys([char]174) }; for ($i = 0; $i -lt ${Math.round(level / 2)}; $i++) { $s.SendKeys([char]175) }`));
       else throw new Error("Volume control is not supported on this platform");
       return `Volume set to ${level}%.`;
     }

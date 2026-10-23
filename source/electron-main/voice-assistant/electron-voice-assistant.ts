@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
+import path from "node:path";
 
+import { playerCommand } from "../../voice-assistant/audio.js";
 import { startDesktopVoiceAssistant, type DesktopVoiceAssistant, type DesktopVoiceDeps } from "../../voice-assistant/desktop-controller.js";
 import { JarvisHudWindow, type HudElectronPorts } from "./hud-window.js";
 
@@ -25,6 +27,14 @@ export interface ElectronVoiceAssistantBindings {
 }
 
 const MAC_CUES = { start: "/System/Library/Sounds/Tink.aiff", stop: "/System/Library/Sounds/Pop.aiff" } as const;
+const WINDOWS_CUES = { start: "Speech On.wav", stop: "Speech Off.wav" } as const;
+
+/** The start/stop sound for this platform, from sounds the OS already ships. */
+export function cueCommand(kind: "start" | "stop", platform: NodeJS.Platform, env: NodeJS.ProcessEnv = process.env): { file: string; args: readonly string[] } | null {
+  if (platform === "darwin") return { file: "afplay", args: [MAC_CUES[kind]] };
+  if (platform === "win32") return playerCommand(path.win32.join(env.SystemRoot || "C:\\Windows", "Media", WINDOWS_CUES[kind]), "win32");
+  return null;
+}
 
 export function createElectronVoiceAssistantDeps(bindings: ElectronVoiceAssistantBindings, electron = loadElectronVoiceRuntime("electron")): DesktopVoiceDeps {
   const { globalShortcut, Notification, systemPreferences } = electron;
@@ -32,6 +42,7 @@ export function createElectronVoiceAssistantDeps(bindings: ElectronVoiceAssistan
   return {
     ...(hud ? { hud } : {}),
     env: bindings.env,
+    platform: bindings.platform,
     readSecret: bindings.readSecret,
     reportFailure: bindings.reportFailure,
     shortcut: {
@@ -47,8 +58,9 @@ export function createElectronVoiceAssistantDeps(bindings: ElectronVoiceAssistan
       return (await systemPreferences.askForMediaAccess?.("microphone")) ?? false;
     },
     cue: (kind) => {
-      if (bindings.platform !== "darwin") return;
-      const child = spawn("afplay", [MAC_CUES[kind]], { stdio: "ignore", detached: true });
+      const command = cueCommand(kind, bindings.platform, bindings.env);
+      if (!command) return;
+      const child = spawn(command.file, [...command.args], { stdio: "ignore", detached: true, windowsHide: true });
       child.on("error", () => undefined);
       child.unref();
     },

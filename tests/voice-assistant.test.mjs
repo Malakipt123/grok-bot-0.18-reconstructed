@@ -262,13 +262,54 @@ test("audio command selection prefers sox and falls back to ffmpeg", async () =>
     const ffmpeg = module.recorderCommand("darwin", (name) => name === "ffmpeg");
     assert.deepEqual(ffmpeg.args.slice(2, 6), ["-f", "avfoundation", "-i", ":0"]);
     assert.deepEqual(ffmpeg.args.slice(-3), ["-f", "s16le", "-"]);
-    assert.equal(module.recorderCommand("win32", (name) => name === "ffmpeg"), null);
+    assert.equal(module.recorderCommand("win32", (name) => name === "ffmpeg", () => null), null);
     assert.equal(module.playerCommand("r.wav", "darwin", () => false).file, "afplay");
     assert.equal(module.playerCommand("r.wav", "linux", (name) => name === "aplay").file, "aplay");
     assert.equal(module.playerCommand("r.wav", "linux", () => false), null);
     assert.match(module.toolEnv({ PATH: "/usr/bin" }, "darwin").PATH, /^\/usr\/bin:.*\/opt\/homebrew\/bin/);
   } finally {
     await dispose();
+  }
+});
+
+test("Windows records from DirectShow, plays through PowerShell and launches apps without cmd.exe", async () => {
+  const audio = await loadModule("audio.ts");
+  const actions = await loadModule("actions.ts");
+  const decode = (args) => Buffer.from(args[args.indexOf("-EncodedCommand") + 1], "base64").toString("utf16le");
+  try {
+    const { module } = audio;
+    const modern = [
+      '[dshow @ 0000] "Integrated Camera" (video)',
+      '[dshow @ 0000]   Alternative name "@device_pnp_\\\\?\\usb#vid"',
+      '[dshow @ 0000] "Microphone Array (Realtek(R) Audio)" (audio)',
+      '[dshow @ 0000] "Stereo Mix (Realtek(R) Audio)" (audio)',
+    ].join("\r\n");
+    assert.deepEqual(module.parseDshowAudioDevices(modern), ["Microphone Array (Realtek(R) Audio)", "Stereo Mix (Realtek(R) Audio)"]);
+    const legacy = '[dshow] DirectShow video devices\n[dshow]  "Webcam"\n[dshow] DirectShow audio devices\n[dshow]  "Headset Mic"\n';
+    assert.deepEqual(module.parseDshowAudioDevices(legacy), ["Headset Mic"]);
+    assert.equal(module.windowsMicrophone({ JARVIS_MIC: " USB Mic " }), "USB Mic");
+
+    const recorder = module.recorderCommand("win32", (name) => name === "ffmpeg" || name === "sox", () => "Headset Mic");
+    assert.equal(recorder.file, "ffmpeg");
+    assert.deepEqual(recorder.args.slice(2, 6), ["-f", "dshow", "-i", "audio=Headset Mic"]);
+    assert.equal(module.recorderCommand("win32", (name) => name === "sox", () => null).file, "sox");
+
+    const player = module.playerCommand("C:\\Users\\O'Brien\\reply.wav", "win32", () => false);
+    assert.equal(player.file, "powershell.exe");
+    assert.equal(decode(player.args), "(New-Object System.Media.SoundPlayer 'C:\\Users\\O''Brien\\reply.wav').PlaySync()");
+
+    const { calls, context } = actionContext({ platform: "win32" });
+    await actions.module.executeAction("open_app", { name: "Tom & Jerry's" }, context);
+    await actions.module.executeAction("set_volume", { level: 0 }, context);
+    await actions.module.executeAction("set_volume", { level: 35 }, context);
+    await actions.module.executeAction("open_url", { url: "https://x.ai/api" }, context);
+    assert.deepEqual(calls.map((call) => call[0]), ["powershell.exe", "powershell.exe", "powershell.exe", "explorer"]);
+    assert.equal(decode(calls[0]), "Start-Process -FilePath 'Tom & Jerry''s'");
+    assert.match(decode(calls[1]), /-lt 50; .*-lt 0;/);
+    assert.match(decode(calls[2]), /-lt 18;/);
+  } finally {
+    await audio.dispose();
+    await actions.dispose();
   }
 });
 
@@ -351,6 +392,10 @@ test("desktop voice assistant toggles listening on the global shortcut and speak
     assert.equal(result.assistant.accelerator, "Alt+Space");
     assert.ok(harness.shortcuts.has("Alt+Space"));
     assert.deepEqual(harness.events[0], ["config", "x", "from-secrets"]);
+    assert.equal(module.defaultVoiceShortcut("darwin"), "Alt+Space");
+    const windows = await module.startDesktopVoiceAssistant(desktopHarness({ platform: "win32" }).deps);
+    assert.equal(windows.assistant.accelerator, "Control+Alt+Space");
+    windows.assistant.dispose();
 
     await result.assistant.toggle();
     assert.equal(result.assistant.state, "listening");
@@ -448,6 +493,11 @@ test("Electron adapter maps globalShortcut, notifications and macOS microphone a
     deps.notify("Jarvis", "Olá");
     assert.equal(await deps.requestMicrophoneAccess(), true);
     assert.deepEqual(calls, [["register", "Alt+Space"], ["unregister", "Alt+Space"], ["notification", "Jarvis", "Olá", true], ["ask"]]);
+    const windowsCue = adapter.cueCommand("start", "win32", { SystemRoot: "D:\\Windows" });
+    assert.equal(windowsCue.file, "powershell.exe");
+    assert.match(Buffer.from(windowsCue.args.at(-1), "base64").toString("utf16le"), /'D:\\Windows\\Media\\Speech On\.wav'/);
+    assert.deepEqual(adapter.cueCommand("stop", "darwin"), { file: "afplay", args: ["/System/Library/Sounds/Pop.aiff"] });
+    assert.equal(adapter.cueCommand("start", "linux"), null);
     const linux = adapter.createElectronVoiceAssistantDeps({ ...bindings, platform: "linux" }, electron);
     assert.equal(await linux.requestMicrophoneAccess(), true);
     assert.equal(calls.length, 4);

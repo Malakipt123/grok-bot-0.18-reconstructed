@@ -13,6 +13,12 @@ import { RoutineScheduler } from "./scheduler.js";
 // each finished sentence is synthesised and played while the next is written.
 
 export const DEFAULT_VOICE_SHORTCUT = "Alt+Space";
+/** Windows uses Alt+Space for the window menu and PowerToys Run. */
+export const WINDOWS_VOICE_SHORTCUT = "Control+Alt+Space";
+
+export function defaultVoiceShortcut(platform: NodeJS.Platform = process.platform): string {
+  return platform === "win32" ? WINDOWS_VOICE_SHORTCUT : DEFAULT_VOICE_SHORTCUT;
+}
 export const VOICE_SECRET_KEYS = ["XAI_API_KEY", "ELEVENLABS_API_KEY"] as const;
 /** Read from the app's secrets too, but not required to start. */
 export const OPTIONAL_VOICE_SECRET_KEYS = ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"] as const;
@@ -53,6 +59,8 @@ export interface DesktopVoiceDeps {
   readonly requestMicrophoneAccess: () => Promise<boolean>;
   readonly reportFailure: (leg: string, error: unknown) => void;
   readonly env?: NodeJS.ProcessEnv;
+  /** Picks the default shortcut; defaults to process.platform. */
+  readonly platform?: NodeJS.Platform;
   readonly cue?: (kind: "start" | "stop") => void;
   readonly onStateChange?: (state: DesktopVoiceState) => void;
   /** When present, replies go to the HUD instead of OS notifications. */
@@ -87,7 +95,7 @@ export async function resolveVoiceEnv(env: NodeJS.ProcessEnv, readSecret: (key: 
 
 export async function startDesktopVoiceAssistant(deps: DesktopVoiceDeps): Promise<DesktopVoiceStartResult> {
   const env = deps.env ?? process.env;
-  const accelerator = env.JARVIS_SHORTCUT?.trim() || DEFAULT_VOICE_SHORTCUT;
+  const accelerator = env.JARVIS_SHORTCUT?.trim() || defaultVoiceShortcut(deps.platform);
   if (accelerator.toLowerCase() === "off") return { status: "disabled", detail: "JARVIS_SHORTCUT=off" };
 
   const voiceEnv = await resolveVoiceEnv(env, deps.readSecret);
