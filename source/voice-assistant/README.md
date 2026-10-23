@@ -38,6 +38,8 @@ microphone ──sox/ffmpeg──▶ ElevenLabs Scribe (speech-to-text)
   routines. The output of each routine is spoken aloud and appended to a log
   file next to the profile.
 
+Manual test checklist for a Mac with real keys (in Portuguese): [docs/VOICE_ASSISTANT_TESTING.md](../../docs/VOICE_ASSISTANT_TESTING.md).
+
 ## Memory between sessions
 
 Jarvis remembers across restarts, in `memory.json` next to `ASSISTANT.md`.
