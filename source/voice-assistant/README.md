@@ -99,8 +99,10 @@ brief includes today's agenda.
 - If access is revoked, Jarvis forgets the token and asks you to reconnect.
   `/google disconnect` deletes the token and revokes it at Google.
 - While the consent screen is in *Testing*, Google expires refresh tokens after
-  7 days, so you have to reconnect weekly. Publishing the app (no review is
-  needed for personal use with your own account) removes that limit.
+  7 days, so you have to reconnect weekly. Switching the app to *In
+  production* removes that limit. Because `calendar.events` is a sensitive
+  scope, an unverified app then shows an "unverified app" warning at sign-in,
+  which you can accept for your own account.
 
 ## Desktop (Option+Space)
 
