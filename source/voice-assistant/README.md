@@ -5,6 +5,9 @@ A push-to-talk voice assistant with two front ends that share the same core:
 - **Desktop:** a global **Option+Space** shortcut in the reconstructed app,
   which works even when the app is in the background.
 - **Terminal:** `npm run voice`.
+- **Jarvis on its own:** `npm run jarvis` starts just the assistant in
+  Electron, with a tray icon, the global shortcut and the HUD. This is how
+  Windows and Linux use the desktop assistant; see [Windows](#windows).
 
 ```text
 microphone ──sox/ffmpeg──▶ ElevenLabs Scribe (speech-to-text)
@@ -301,8 +304,44 @@ routine whose time has already passed when the assistant starts waits until the
 next day. Log files must be plain file names; they are written to the profile
 directory.
 
+## Windows
+
+Only the macOS app is packaged, so on Windows Jarvis runs on its own with
+`npm run jarvis` (a Portuguese step-by-step guide is in
+[docs/JARVIS_WINDOWS.md](../../docs/JARVIS_WINDOWS.md)).
+
+```powershell
+winget install OpenJS.NodeJS.LTS Gyan.FFmpeg Git.Git
+git clone https://github.com/Malakipt123/grok-bot-0.18-reconstructed.git
+cd grok-bot-0.18-reconstructed
+npm ci --ignore-scripts            # skips native builds Jarvis does not need
+node node_modules/electron/install.js
+setx XAI_API_KEY "..."             # saved for new terminals and the login item
+setx ELEVENLABS_API_KEY "..."
+# open a new terminal, then:
+npm run jarvis
+```
+
+- The shortcut is **Ctrl+Alt+Space**: Alt+Space is the window menu (and
+  PowerToys Run) on Windows. `JARVIS_SHORTCUT` changes it.
+- The tray icon (a cyan ring) shows the status and has **Start at login**,
+  **Open Jarvis folder** and **Quit**.
+- Recording uses ffmpeg with DirectShow and picks the first microphone. If
+  that is the wrong one, list them with
+  `ffmpeg -list_devices true -f dshow -i dummy` and set `JARVIS_MIC` to the
+  exact name, for example `setx JARVIS_MIC "Microphone (USB Audio)"`.
+- Replies play through PowerShell's built-in `System.Media.SoundPlayer`, and
+  the start/stop sounds are Windows' own *Speech On* and *Speech Off*.
+- Windows asks nothing the first time, but **Settings → Privacy & security →
+  Microphone → Let desktop apps access your microphone** must be on.
+- "volume a 30" presses the volume keys (50 steps down, then up in 2 % steps),
+  so the volume overlay appears briefly.
+- App secrets are not available outside the macOS app, so keys come from the
+  environment only. `npm run voice` also works in the same terminal.
+
 ## Platform notes
 
 The assistant is built for macOS (`open`, `osascript`, `afplay`). On Linux it
-uses `xdg-open`, `gtk-launch`, `pactl`, and `ffplay` or `mpg123`. On Windows,
-microphone capture is not wired up yet, so use typed input there.
+uses `xdg-open`, `gtk-launch`, `pactl`, and `ffplay` or `aplay`. On Windows it
+uses PowerShell (`Start-Process`, `SoundPlayer`, volume keys), `explorer` for
+links and ffmpeg for the microphone; actions never go through `cmd.exe`.

@@ -117,6 +117,8 @@ open the Google Meet when you say "abre a reunião".
 It needs `XAI_API_KEY` and `ELEVENLABS_API_KEY` (as app secrets or environment
 variables) and sox or ffmpeg; see
 [source/voice-assistant/README.md](source/voice-assistant/README.md).
+On Windows, `npm run jarvis` runs Jarvis on its own with a tray icon and
+**Ctrl+Alt+Space**; see [docs/JARVIS_WINDOWS.md](docs/JARVIS_WINDOWS.md).
 
 ### Local Docker sandbox
 
