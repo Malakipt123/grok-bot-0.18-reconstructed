@@ -10,6 +10,9 @@ import { safeText } from "./grok.js";
 // Only the refresh token is persisted, in a 0600 file next to ASSISTANT.md.
 
 export const GOOGLE_CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events";
+/** Read-only: Jarvis can search and read email, never send, change or delete it. */
+export const GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
+const REQUESTED_SCOPES = `${GOOGLE_CALENDAR_SCOPE} ${GMAIL_READONLY_SCOPE}`;
 export const GOOGLE_TOKEN_FILENAME = "google-token.json";
 const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -19,7 +22,7 @@ const LOGIN_TIMEOUT_MS = 5 * 60_000;
 export class GoogleNotConnectedError extends Error {
   override readonly name = "GoogleNotConnectedError";
   constructor() {
-    super("Google Calendar is not connected");
+    super("Google is not connected");
   }
 }
 
@@ -51,6 +54,7 @@ export class GoogleOAuth {
   readonly #options: GoogleOAuthOptions;
   readonly #fetch: typeof fetch;
   #refreshToken: string | null | undefined;
+  #scopes: readonly string[] = [];
   #access: { token: string; expiresAt: number } | null = null;
   #login: Promise<void> | null = null;
 
@@ -61,6 +65,14 @@ export class GoogleOAuth {
 
   async isConnected(): Promise<boolean> {
     return (await this.#loadRefreshToken()) !== null;
+  }
+
+  /**
+   * Whether the saved consent includes `scope`. Google lets the user untick
+   * permissions, and connections made before Gmail support only have Calendar.
+   */
+  async hasScope(scope: string): Promise<boolean> {
+    return (await this.#loadRefreshToken()) !== null && this.#scopes.includes(scope);
   }
 
   /** Opens the browser for consent and resolves once the refresh token is saved. */
@@ -74,6 +86,7 @@ export class GoogleOAuth {
   async disconnect(): Promise<void> {
     const token = await this.#loadRefreshToken();
     this.#refreshToken = null;
+    this.#scopes = [];
     this.#access = null;
     await rm(this.#options.tokenPath, { force: true });
     if (token) {
@@ -129,7 +142,7 @@ export class GoogleOAuth {
           } else if (url.searchParams.has("error")) {
             finish(400, "Ligação cancelada.", () => reject(new Error(`Google sign-in was cancelled (${url.searchParams.get("error")})`)));
           } else {
-            finish(200, "Google Calendar ligado ao Jarvis. Pode fechar esta janela.", () => resolve(url.searchParams.get("code")!));
+            finish(200, "Conta Google ligada ao Jarvis. Pode fechar esta janela.", () => resolve(url.searchParams.get("code")!));
           }
         });
         const authUrl = new URL(AUTH_URL);
@@ -137,7 +150,7 @@ export class GoogleOAuth {
           client_id: this.#options.clientId,
           redirect_uri: redirectUri,
           response_type: "code",
-          scope: GOOGLE_CALENDAR_SCOPE,
+          scope: REQUESTED_SCOPES,
           code_challenge: challenge,
           code_challenge_method: "S256",
           state,
@@ -151,7 +164,7 @@ export class GoogleOAuth {
       });
       const exchanged = await this.#token({ grant_type: "authorization_code", code, code_verifier: verifier, redirect_uri: redirectUri });
       if (!exchanged.json.refresh_token) throw new Error(`Google did not return a refresh token (${exchanged.status})`);
-      await this.#saveRefreshToken(exchanged.json.refresh_token, exchanged.json.scope ?? GOOGLE_CALENDAR_SCOPE);
+      await this.#saveRefreshToken(exchanged.json.refresh_token, exchanged.json.scope ?? REQUESTED_SCOPES);
       if (exchanged.json.access_token) {
         this.#access = { token: exchanged.json.access_token, expiresAt: this.#now() + (exchanged.json.expires_in ?? 3600) * 1000 };
       }
@@ -175,6 +188,7 @@ export class GoogleOAuth {
     try {
       const stored = JSON.parse(await readFile(this.#options.tokenPath, "utf8")) as Partial<StoredToken>;
       this.#refreshToken = stored.schemaVersion === 1 && typeof stored.refreshToken === "string" ? stored.refreshToken : null;
+      this.#scopes = this.#refreshToken && typeof stored.scope === "string" ? stored.scope.split(" ") : [];
     } catch {
       this.#refreshToken = null;
     }
@@ -189,6 +203,7 @@ export class GoogleOAuth {
     await chmod(temporary, 0o600);
     await rename(temporary, this.#options.tokenPath);
     this.#refreshToken = refreshToken;
+    this.#scopes = scope.split(" ");
   }
 
   #now(): number {

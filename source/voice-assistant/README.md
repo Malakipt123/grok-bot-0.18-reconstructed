@@ -110,21 +110,22 @@ Jarvis can read your agenda and create events in your primary Google Calendar.
 It uses the official Calendar API with OAuth for desktop apps: you sign in in
 your browser, Google redirects to a one-shot server on `127.0.0.1`, and the
 code is exchanged with PKCE. Only the refresh token is kept, in
-`google-token.json` (`0600`) next to `ASSISTANT.md`. The scope is
-`calendar.events`: events only, no other Google data.
+`google-token.json` (`0600`) next to `ASSISTANT.md`. The scopes are
+`calendar.events` (events only) and `gmail.readonly` (see [Gmail](#gmail)):
+nothing else in your Google account.
 
 **One-time setup (about 5 minutes).** Google requires your own OAuth client;
 none can be shipped in this repository.
 
 1. In [Google Cloud Console](https://console.cloud.google.com/), create a
-   project and enable the **Google Calendar API**.
+   project and enable the **Google Calendar API** and the **Gmail API**.
 2. Under **Google Auth Platform**, configure the consent screen (External,
    Testing is fine) and add your Google account as a **test user**.
 3. Under **Clients**, create a client of type **Desktop app**, then copy its
    ID and secret.
 4. Provide `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`, either as
    environment variables or in the app's secrets store, like the other keys.
-5. Say **"liga o calendário"** ("connect my calendar") or run
+5. Say **"liga o calendário"**, "liga o Google" ("connect my calendar") or run
    `/google connect` in the terminal, then approve access in your browser.
 
 Then ask things like "o que tenho amanhã?", "estou livre na sexta à tarde?" or
@@ -179,6 +180,32 @@ brief includes today's agenda.
   production* removes that limit. Because `calendar.events` is a sensitive
   scope, an unverified app then shows an "unverified app" warning at sign-in,
   which you can accept for your own account.
+
+## Gmail
+
+The same Google sign-in also lets Jarvis **read** your email. Ask "tenho
+emails importantes?", "o que diz o email da Ana?" or "recebi alguma coisa do
+banco esta semana?". The daily brief mentions important unread email too.
+
+- **Read-only.** The scope is `gmail.readonly`, so Jarvis cannot send, reply,
+  delete, label or change anything, even if asked.
+- Tools: `gmail_search`, which takes Gmail search syntax and defaults to
+  `is:unread category:primary newer_than:2d`, and `gmail_read`, which returns
+  the text of one message, cut at 4,000 characters.
+- **Untrusted content.** Emails are written by other people, so their content
+  reaches Grok marked as untrusted data. Grok is told never to follow
+  instructions found in an email, and never to open links, create events, set
+  reminders or remember facts because an email asks to.
+- **Privacy.** To summarise an email, its sender, subject and text are sent to
+  Grok (xAI). Nothing is stored locally.
+- **Already connected before Gmail support?** Your consent only covers
+  Calendar. Say **"liga o Google"** (or run `/google connect`) once more and
+  tick Gmail; `/google status` shows whether Gmail is allowed. Google's
+  consent screen lets you untick Gmail, and then Jarvis just says it has no
+  access.
+- In Google Cloud, enable the **Gmail API** in the same project. While the
+  app is in Testing, Google shows an "unverified app" warning; continue as
+  the test user.
 
 ## Desktop (Option+Space)
 
