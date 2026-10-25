@@ -69,6 +69,18 @@ leaves your machine except as context in Grok requests.
 - An unreadable `memory.json` is never overwritten. It is moved aside as
   `memory.json.corrupt-<timestamp>` and reported.
 
+## Changing the voice
+
+Say **"usa uma voz feminina"**, "quero uma voz masculina britânica" or "volta
+à voz normal". Grok lists the voices in your ElevenLabs account (premade ones,
+plus any you cloned or added from the Voice Library), picks the best match and
+switches. The confirmation is already spoken in the new voice. To get more
+choices, add voices to your account in the ElevenLabs Voice Library.
+
+The choice is saved in `voice.json` (0600) next to `ASSISTANT.md` and wins
+over `ELEVENLABS_VOICE_ID` on restart; "volta à voz normal" removes it. Only
+voices that really exist in the account can be chosen.
+
 ## Voice reminders and snooze
 
 These work without Google Calendar.
@@ -268,7 +280,7 @@ Pass `--mute` for text-only replies.
 | --- | --- |
 | `GROK_MODEL` | `grok-4` |
 | `XAI_BASE_URL` | `https://api.x.ai/v1` |
-| `ELEVENLABS_VOICE_ID` | `JBFqnCBsd6RMkjVDRZzb` (George) |
+| `ELEVENLABS_VOICE_ID` | `JBFqnCBsd6RMkjVDRZzb` (George); a voice chosen by voice wins |
 | `ELEVENLABS_TTS_MODEL` | `eleven_v3` |
 | `ELEVENLABS_STT_MODEL` | `scribe_v1` |
 | `JARVIS_LANGUAGE` | `pt` (reply language and transcription hint) |

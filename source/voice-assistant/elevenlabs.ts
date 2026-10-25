@@ -39,13 +39,54 @@ export interface ElevenLabsClientOptions {
   readonly fetch?: typeof fetch;
 }
 
+/** A voice in the user's ElevenLabs account (premade, cloned or from the library). */
+export interface ElevenLabsVoice {
+  readonly id: string;
+  readonly name: string;
+  readonly gender: string | null;
+  readonly accent: string | null;
+  readonly age: string | null;
+  readonly description: string | null;
+}
+
 export class ElevenLabsClient {
   readonly #options: ElevenLabsClientOptions;
   readonly #fetch: typeof fetch;
+  #voiceId: string;
 
   constructor(options: ElevenLabsClientOptions) {
     this.#options = options;
     this.#fetch = options.fetch ?? fetch;
+    this.#voiceId = options.voiceId;
+  }
+
+  get voiceId(): string {
+    return this.#voiceId;
+  }
+
+  /** Later synthesis, including the rest of a reply already being spoken, uses this voice. */
+  setVoice(voiceId: string): void {
+    this.#voiceId = voiceId;
+  }
+
+  async listVoices(signal?: AbortSignal): Promise<ElevenLabsVoice[]> {
+    const response = await this.#fetch(`${this.#options.baseUrl}/voices`, {
+      headers: { "xi-api-key": this.#options.apiKey },
+      ...(signal ? { signal } : {}),
+    });
+    if (!response.ok) throw new ElevenLabsHttpError(response.status, `ElevenLabs voices failed (${response.status}): ${await safeText(response)}`);
+    const body = (await response.json()) as { voices?: Array<{ voice_id?: unknown; name?: unknown; description?: unknown; labels?: Record<string, unknown> | null }> };
+    const label = (value: unknown) => (typeof value === "string" && value.trim() ? value.trim() : null);
+    return (body.voices ?? []).flatMap((voice) => typeof voice.voice_id === "string" && typeof voice.name === "string"
+      ? [{
+        id: voice.voice_id,
+        name: voice.name,
+        gender: label(voice.labels?.gender),
+        accent: label(voice.labels?.accent),
+        age: label(voice.labels?.age),
+        description: label(voice.description) ?? label(voice.labels?.description),
+      }]
+      : []);
   }
 
   /**
@@ -78,7 +119,7 @@ export class ElevenLabsClient {
   async #requestSpeech(suffix: string, text: string, options: SynthesizeOptions): Promise<Response> {
     const { previousText, signal } = options;
     const stitching = previousText && STITCHING_MODELS.test(this.#options.ttsModel) ? { previous_text: previousText } : {};
-    const url = `${this.#options.baseUrl}/text-to-speech/${encodeURIComponent(this.#options.voiceId)}${suffix}?output_format=pcm_${TTS_SAMPLE_RATE}`;
+    const url = `${this.#options.baseUrl}/text-to-speech/${encodeURIComponent(this.#voiceId)}${suffix}?output_format=pcm_${TTS_SAMPLE_RATE}`;
     const response = await this.#fetch(url, {
       method: "POST",
       headers: { "xi-api-key": this.#options.apiKey, "content-type": "application/json" },

@@ -178,6 +178,16 @@ Funcionam sem Google Calendar.
   Cria um lembrete e diz «cancela esse lembrete», ou usa /reminders cancel r1.
   Esperado: Desaparece de /reminders e nunca é dito.
 
+### Mudar de voz
+
+- [ ] **Voz feminina**
+  Diz «usa uma voz feminina».
+  Esperado: A confirmação já vem numa voz feminina da tua conta ElevenLabs, com o nome dela. Depois de reiniciar, continua a mesma voz.
+
+- [ ] **Voltar à voz normal**
+  Diz «volta à voz normal».
+  Esperado: Volta à voz George (ou à de ELEVENLABS_VOICE_ID) e o voice.json fica vazio.
+
 ## 7. Google Calendar
 
 Precisa do teu OAuth client de Desktop. Os passos estão em source/voice-assistant/README.md.
