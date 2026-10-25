@@ -1,12 +1,18 @@
+import { appendFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { VOICE_SECRET_KEYS } from "../../voice-assistant/desktop-controller.js";
 import { startElectronVoiceAssistant } from "./electron-voice-assistant.js";
 import type { HudElectronPorts } from "./hud-window.js";
+import { ringIcon } from "./ring-icon.js";
+import { KEY_STORE_FILENAME, KeyStore, type SecretCipher } from "./key-store.js";
+import { renderSetupPage, SETUP_HEIGHT, SETUP_SAVE_TITLE, SETUP_WIDTH, setupFields, setupLabels } from "./setup-page.js";
 
 // Jarvis on its own: a tray icon, the global shortcut and the HUD, without the
 // rest of Grok Bot. This is how Windows (and Linux) run the assistant, since
-// only the macOS app is packaged. Started by `npm run jarvis`.
+// only the macOS app is packaged. `npm run jarvis` starts it from the source
+// tree; `npm run package:windows` builds it into Jarvis-Setup.exe.
 
 interface TrayMenuItem {
   readonly label?: string;
@@ -16,13 +22,31 @@ interface TrayMenuItem {
   readonly click?: () => void;
 }
 
+interface SetupWindow {
+  loadURL(url: string): Promise<unknown>;
+  show(): void;
+  focus(): void;
+  close(): void;
+  isDestroyed(): boolean;
+  setMenuBarVisibility?(visible: boolean): void;
+  on(event: "closed", listener: () => void): void;
+  readonly webContents: {
+    executeJavaScript(code: string): Promise<unknown>;
+    on(event: "page-title-updated", listener: (event: unknown, title: string) => void): void;
+    on(event: "will-navigate", listener: (event: { preventDefault(): void }) => void): void;
+    setWindowOpenHandler(handler: () => { action: "deny" }): void;
+  };
+}
+
 interface StandaloneElectron extends HudElectronPorts {
   readonly app: {
+    readonly isPackaged: boolean;
     setName(name: string): void;
     setAppUserModelId(id: string): void;
+    getPath(name: "userData"): string;
     requestSingleInstanceLock(): boolean;
     whenReady(): Promise<void>;
-    on(event: "window-all-closed" | "will-quit", listener: () => void): void;
+    on(event: "window-all-closed" | "will-quit" | "second-instance", listener: () => void): void;
     quit(): void;
     getLoginItemSettings(options?: { path?: string; args?: string[] }): { openAtLogin: boolean };
     setLoginItemSettings(settings: { openAtLogin: boolean; path?: string; args?: string[] }): void;
@@ -33,32 +57,23 @@ interface StandaloneElectron extends HudElectronPorts {
   readonly nativeImage: { createFromBitmap(buffer: Buffer, options: { width: number; height: number; scaleFactor?: number }): unknown };
   readonly Notification: (new (options: { title: string; body: string; silent?: boolean }) => { show(): void }) & { isSupported(): boolean };
   readonly shell: { openPath(path: string): Promise<string> };
+  readonly safeStorage: SecretCipher;
 }
 
 const electron = require("electron") as StandaloneElectron;
 const { app } = electron;
-const portuguese = (process.env.JARVIS_LANGUAGE || "pt").toLowerCase().startsWith("pt");
-const loginItem = { path: process.execPath, args: [path.resolve(process.argv[1] ?? __filename)] };
+const language = process.env.JARVIS_LANGUAGE || "pt";
+const portuguese = language.toLowerCase().startsWith("pt");
+// Packaged, the app itself is the program; from source, Electron needs the bundle path.
+const loginItem = app.isPackaged
+  ? { path: process.execPath, args: [] }
+  : { path: process.execPath, args: [path.resolve(process.argv[1] ?? __filename)] };
+// CI's Windows smoke test: write every status line to this file and quit after the first.
+const smokeLog = process.env.JARVIS_SMOKE_LOG;
 
-/** A 32×32 cyan ring like the HUD's arc reactor, drawn in code so no icon file is needed. */
-export function ringIcon(size = 32): Buffer {
-  const pixels = Buffer.alloc(size * size * 4);
-  const centre = (size - 1) / 2;
-  for (let y = 0; y < size; y += 1) {
-    for (let x = 0; x < size; x += 1) {
-      const distance = Math.hypot(x - centre, y - centre) / (size / 2);
-      const ring = Math.max(0, 1 - Math.abs(distance - 0.72) / 0.14);
-      const core = Math.max(0, 1 - distance / 0.32);
-      const alpha = Math.round(255 * Math.min(1, ring + core));
-      const offset = (y * size + x) * 4;
-      // BGRA
-      pixels[offset] = 255;
-      pixels[offset + 1] = 220;
-      pixels[offset + 2] = 80;
-      pixels[offset + 3] = alpha;
-    }
-  }
-  return pixels;
+if (app.isPackaged && process.platform === "win32") {
+  // The installer ships ffmpeg next to the app, so no separate install is needed.
+  process.env.PATH = [path.join((process as NodeJS.Process & { resourcesPath: string }).resourcesPath, "ffmpeg"), process.env.PATH ?? ""].join(path.delimiter);
 }
 
 function notify(body: string): void {
@@ -71,19 +86,93 @@ if (!app.requestSingleInstanceLock()) {
   app.setName("Jarvis");
   // Windows only shows notifications for apps with an AppUserModelID.
   app.setAppUserModelId("com.grok-bot.jarvis");
-  // HUD windows come and go; closing the last one must not quit the assistant.
+  // HUD and setup windows come and go; closing the last one must not quit the assistant.
   app.on("window-all-closed", () => undefined);
 
-  void app.whenReady().then(() => {
+  void app.whenReady().then(async () => {
     app.dock?.hide();
+    const keys = new KeyStore(path.join(app.getPath("userData"), KEY_STORE_FILENAME), electron.safeStorage);
     const tray = new electron.Tray(electron.nativeImage.createFromBitmap(ringIcon(), { width: 32, height: 32, scaleFactor: 2 }));
     let status = portuguese ? "A iniciar…" : "Starting…";
+    let assistant: { dispose(): void } | null = null;
+    let setupWindow: SetupWindow | null = null;
     const profileDirectory = path.dirname(process.env.JARVIS_PROFILE || path.join(os.homedir(), ".grok-bot", "voice-assistant", "ASSISTANT.md"));
+
+    const log = (message: string) => {
+      process.stdout.write(`[jarvis] ${message}\n`);
+      status = message;
+      refreshMenu();
+      if (smokeLog) {
+        appendFileSync(smokeLog, `${message}\n`);
+        setTimeout(() => app.quit(), 1_000);
+      } else {
+        notify(message);
+      }
+    };
+
+    const startAssistant = () => {
+      assistant?.dispose();
+      assistant = startElectronVoiceAssistant({
+        // Environment variables win; otherwise the keys typed into the setup window.
+        readSecret: (key) => keys.get(key),
+        reportFailure: (leg, error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          process.stderr.write(`[jarvis] ${leg}: ${message}\n`);
+          if (smokeLog) appendFileSync(smokeLog, `failure ${leg}: ${message}\n`);
+          notify(message);
+        },
+        env: process.env,
+        platform: process.platform,
+        log,
+      });
+    };
+
+    const openSetup = async () => {
+      if (setupWindow && !setupWindow.isDestroyed()) {
+        setupWindow.show();
+        setupWindow.focus();
+        return;
+      }
+      const saved = new Set<string>();
+      for (const field of setupFields(language, () => false)) if (await keys.has(field.key)) saved.add(field.key);
+      const window = new electron.BrowserWindow({
+        width: SETUP_WIDTH,
+        height: SETUP_HEIGHT,
+        useContentSize: true,
+        resizable: false,
+        maximizable: false,
+        title: setupLabels(language).title,
+        backgroundColor: "#07131d",
+        autoHideMenuBar: true,
+        webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true },
+      }) as unknown as SetupWindow;
+      setupWindow = window;
+      window.setMenuBarVisibility?.(false);
+      window.on("closed", () => {
+        if (setupWindow === window) setupWindow = null;
+      });
+      // The page is self-contained: no navigation, no pop-ups.
+      window.webContents.on("will-navigate", (event) => event.preventDefault());
+      window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+      window.webContents.on("page-title-updated", (_event, title) => {
+        if (title !== SETUP_SAVE_TITLE) return;
+        void (async () => {
+          const values = await window.webContents.executeJavaScript("window.jarvisSetupValues()") as Record<string, unknown>;
+          await keys.save(values);
+          window.close();
+          startAssistant();
+        })().catch((error: unknown) => notify(error instanceof Error ? error.message : String(error)));
+      });
+      await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(renderSetupPage(setupFields(language, (key) => saved.has(key)), setupLabels(language), electron.safeStorage.isEncryptionAvailable()))}`);
+      window.show();
+    };
+
     const refreshMenu = () => {
       tray.setToolTip(`Jarvis · ${status}`);
       tray.setContextMenu(electron.Menu.buildFromTemplate([
         { label: status, enabled: false },
         { type: "separator" },
+        { label: portuguese ? "Chaves…" : "Keys…", click: () => void openSetup() },
         {
           label: portuguese ? "Iniciar com o sistema" : "Start at login",
           type: "checkbox",
@@ -99,26 +188,21 @@ if (!app.requestSingleInstanceLock()) {
       ]));
     };
     refreshMenu();
+    // Opening Jarvis again (e.g. from the Start menu) while it runs shows the keys window.
+    app.on("second-instance", () => void openSetup());
 
-    const assistant = startElectronVoiceAssistant({
-      // No app secrets store here: keys come from the environment (setx on Windows).
-      readSecret: async () => null,
-      reportFailure: (leg, error) => {
-        const message = error instanceof Error ? error.message : String(error);
-        process.stderr.write(`[jarvis] ${leg}: ${message}\n`);
-        notify(message);
-      },
-      env: process.env,
-      platform: process.platform,
-      log: (message) => {
-        process.stdout.write(`[jarvis] ${message}\n`);
-        status = message;
-        refreshMenu();
-        notify(message);
-      },
-    });
+    const missing: string[] = [];
+    for (const key of VOICE_SECRET_KEYS) if (!process.env[key]?.trim() && !(await keys.has(key))) missing.push(key);
+    if (missing.length > 0 && !smokeLog) {
+      status = portuguese ? "À espera das chaves" : "Waiting for keys";
+      refreshMenu();
+      await openSetup();
+    } else {
+      startAssistant();
+    }
+
     app.on("will-quit", () => {
-      assistant.dispose();
+      assistant?.dispose();
       tray.destroy();
     });
   });

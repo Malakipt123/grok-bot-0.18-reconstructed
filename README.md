@@ -118,8 +118,10 @@ read (never send) your Gmail: "tenho emails importantes?".
 It needs `XAI_API_KEY` and `ELEVENLABS_API_KEY` (as app secrets or environment
 variables) and sox or ffmpeg; see
 [source/voice-assistant/README.md](source/voice-assistant/README.md).
-On Windows, `npm run jarvis` runs Jarvis on its own with a tray icon and
-**Ctrl+Alt+Space**; see [docs/JARVIS_WINDOWS.md](docs/JARVIS_WINDOWS.md).
+On Windows, install it with
+[Jarvis-Setup.exe](https://github.com/Malakipt123/grok-bot-0.18-reconstructed/releases/download/jarvis-windows-latest/Jarvis-Setup.exe):
+it runs Jarvis on its own with a tray icon and **Ctrl+Alt+Space**, and asks
+for the keys on first run; see [docs/JARVIS_WINDOWS.md](docs/JARVIS_WINDOWS.md).
 
 ### Local Docker sandbox
 

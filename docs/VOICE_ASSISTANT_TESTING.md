@@ -267,6 +267,22 @@ Ativa a Gmail API no mesmo projeto do Google Cloud.
 
 Segue primeiro os passos de [JARVIS_WINDOWS.md](JARVIS_WINDOWS.md).
 
+- [ ] **Instalador**
+  Corre o Jarvis-Setup.exe (Mais informações → Executar mesmo assim, se aparecer).
+  Esperado: Instala sem pedir administrador, cria o Jarvis no menu Iniciar com o ícone do anel e abre a janela Configurar o Jarvis.
+
+- [ ] **Janela das chaves**
+  Carrega em Guardar sem preencher nada, depois cola as duas chaves e guarda.
+  Esperado: Primeiro avisa «Falta preencher este campo.»; depois a janela fecha e aparece «Ready. Press Control+Alt+Space to talk.».
+
+- [ ] **Mudar as chaves**
+  No menu do ícone, escolhe Chaves…, deixa os campos vazios e guarda.
+  Esperado: As chaves guardadas mantêm-se e o Jarvis continua a funcionar.
+
+- [ ] **Desinstalar**
+  Definições → Aplicações → Jarvis → Desinstalar.
+  Esperado: O Jarvis fecha e desaparece do menu Iniciar; voltar a instalar não volta a pedir as chaves.
+
 - [ ] **Arranque**
   Corre npm run jarvis num PowerShell novo.
   Esperado: Aparece o anel na barra de tarefas e a notificação «Ready. Press Control+Alt+Space to talk.».
