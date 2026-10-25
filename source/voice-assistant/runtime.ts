@@ -11,6 +11,7 @@ import { GOOGLE_TOKEN_FILENAME, GoogleOAuth } from "./google-auth.js";
 import { MEMORY_FILENAME, MemoryStore } from "./memory.js";
 import { EventReminders } from "./reminders.js";
 import { VOICE_REMINDERS_FILENAME, VoiceReminders, type Announcement } from "./voice-reminders.js";
+import { VOICE_SETTINGS_FILENAME, VoiceSelector } from "./voices.js";
 import { DEFAULT_ASSISTANT_PROFILE, parseAssistantProfile, type AssistantProfile, type AssistantRoutine } from "./profile.js";
 
 /** Everything a front end (terminal or desktop) needs, built from one config. */
@@ -26,6 +27,8 @@ export interface VoiceAssistantRuntime {
   readonly google: GoogleOAuth | null;
   /** Reminders set by voice ("lembra-me de … às 17h") and snoozes. */
   readonly voiceReminders: VoiceReminders;
+  /** Voice changes by voice ("usa uma voz feminina"), saved in voice.json. */
+  readonly voices: VoiceSelector;
   /**
    * Starts everything Jarvis says on its own: voice reminders and snoozes, and
    * calendar events `reminderMinutes` before they begin (with Google Calendar connected).
@@ -104,8 +107,18 @@ export async function createVoiceAssistantRuntime(
     announce: (announcement) => announceHandler(announcement),
     onError: (error) => options.onNotice?.(`${portuguese ? "Lembretes" : "Reminders"}: ${error instanceof Error ? error.message : String(error)}`),
   });
+  const voice = new ElevenLabsClient({
+    apiKey: config.elevenLabsApiKey,
+    baseUrl: config.elevenLabsBaseUrl,
+    voiceId: config.elevenLabsVoiceId,
+    ttsModel: config.elevenLabsTtsModel,
+    sttModel: config.elevenLabsSttModel,
+    language: config.language,
+  });
+  const voices = await VoiceSelector.open(voice, path.join(profileDirectory, VOICE_SETTINGS_FILENAME));
   const toolkits = [
     voiceReminders.toolkit(),
+    voices.toolkit(),
     ...(google && calendar ? [createCalendarToolkit({ auth: google, timeZone: config.timeZone, calendar, ...(joiner ? { joiner } : {}) })] : []),
   ];
   const connectCalendar = () => {
@@ -121,14 +134,6 @@ export async function createVoiceAssistantRuntime(
     return portuguese ? "Abri o browser para ligares o teu Google Calendar." : "I've opened your browser so you can connect Google Calendar.";
   };
 
-  const voice = new ElevenLabsClient({
-    apiKey: config.elevenLabsApiKey,
-    baseUrl: config.elevenLabsBaseUrl,
-    voiceId: config.elevenLabsVoiceId,
-    ttsModel: config.elevenLabsTtsModel,
-    sttModel: config.elevenLabsSttModel,
-    language: config.language,
-  });
   const assistant = new VoiceAssistant({
     grok: new GrokClient({ apiKey: config.xaiApiKey, baseUrl: config.xaiBaseUrl, model: config.grokModel }),
     profile,
@@ -166,6 +171,7 @@ export async function createVoiceAssistantRuntime(
     memory,
     google,
     voiceReminders,
+    voices,
     startReminders(announce) {
       announceHandler = (announcement) => {
         if (announcement.event) joiner?.noteAnnounced(announcement.event);

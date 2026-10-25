@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -1754,5 +1754,55 @@ test("end to end through the runtime: a voice reminder is announced, \"adia 5 mi
     handle.stop();
   } finally {
     await runtimeModule.dispose();
+  }
+});
+
+test("voice changes by voice pick from the account's voices, persist privately and survive a restart", async () => {
+  const eleven = await loadModule("elevenlabs.ts");
+  const voices = await loadModule("voices.ts");
+  try {
+    const requests = [];
+    const fetch = async (url, init = {}) => {
+      requests.push([String(url), init.headers?.["xi-api-key"]]);
+      if (String(url).endsWith("/voices")) {
+        return Response.json({ voices: [
+          { voice_id: "george", name: "George", labels: { gender: "male", accent: "british", age: "middle aged" } },
+          { voice_id: "alice", name: "Alice", description: "Clear, engaging educator", labels: { gender: "female", accent: "british", age: "middle aged" } },
+          { voice_id: "sarah", name: "Sarah", labels: { gender: "female", accent: "american", age: "young", description: "soft news" } },
+          { voice_id: 7, name: "broken" },
+        ] });
+      }
+      return new Response(new Uint8Array(4));
+    };
+    const client = () => new eleven.module.ElevenLabsClient({ apiKey: "k", baseUrl: "https://api.elevenlabs.io/v1", voiceId: "george", ttsModel: "eleven_v3", sttModel: "scribe_v1", language: "pt", fetch });
+    const file = path.join(voices.temporary, "voice.json");
+
+    const first = client();
+    const selector = await voices.module.VoiceSelector.open(first, file);
+    assert.equal(selector.current, null);
+    const toolkit = selector.toolkit();
+    assert.match(await toolkit.prompt(), /currently the default one/);
+    assert.equal(await toolkit.run("voice_list", { gender: "female" }),
+      "alice · Alice (female, british, middle aged) — Clear, engaging educator\nsarah · Sarah (female, american, young) — soft news");
+    assert.equal(await toolkit.run("voice_list", { gender: "female", query: "American" }), "sarah · Sarah (female, american, young) — soft news");
+    assert.equal(await toolkit.run("voice_set", { voice_id: "alice" }), "Voice set to Alice.");
+    await first.synthesize("Olá");
+    assert.equal(requests.at(-1)[0], "https://api.elevenlabs.io/v1/text-to-speech/alice?output_format=pcm_22050");
+    assert.equal(requests[0][1], "k");
+    assert.equal((await stat(file)).mode & 0o777, 0o600);
+    await assert.rejects(toolkit.run("voice_set", { voice_id: "invented" }), /No voice with id invented/);
+    assert.equal(first.voiceId, "alice");
+
+    const restarted = client();
+    const again = await voices.module.VoiceSelector.open(restarted, file);
+    assert.equal(again.current, "Alice");
+    assert.equal(restarted.voiceId, "alice");
+    assert.match(await again.toolkit().prompt(), /currently Alice/);
+    assert.equal(await again.toolkit().run("voice_reset", {}), "Back to the default voice.");
+    assert.equal(restarted.voiceId, "george");
+    assert.equal((await voices.module.VoiceSelector.open(client(), file)).current, null);
+  } finally {
+    await eleven.dispose();
+    await voices.dispose();
   }
 });
