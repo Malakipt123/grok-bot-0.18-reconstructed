@@ -7,6 +7,7 @@ import type { VoiceAssistantConfig } from "./config.js";
 import { ElevenLabsClient } from "./elevenlabs.js";
 import { GrokClient } from "./grok.js";
 import { createCalendarToolkit, createMeetingJoiner, GoogleCalendarClient, isMeetingUrl } from "./calendar.js";
+import { createGmailToolkit, GmailClient } from "./gmail.js";
 import { GOOGLE_TOKEN_FILENAME, GoogleOAuth } from "./google-auth.js";
 import { MEMORY_FILENAME, MemoryStore } from "./memory.js";
 import { EventReminders } from "./reminders.js";
@@ -120,18 +121,19 @@ export async function createVoiceAssistantRuntime(
     voiceReminders.toolkit(),
     voices.toolkit(),
     ...(google && calendar ? [createCalendarToolkit({ auth: google, timeZone: config.timeZone, calendar, ...(joiner ? { joiner } : {}) })] : []),
+    ...(google ? [createGmailToolkit({ auth: google, gmail: new GmailClient({ auth: google, ...(options.fetch ? { fetch: options.fetch } : {}) }) })] : []),
   ];
   const connectCalendar = () => {
     if (!google) {
       return portuguese
-        ? "O Google Calendar ainda não está configurado. Falta definir GOOGLE_CLIENT_ID."
-        : "Google Calendar is not set up yet: GOOGLE_CLIENT_ID is missing.";
+        ? "A conta Google ainda não está configurada. Falta definir GOOGLE_CLIENT_ID."
+        : "Google is not set up yet: GOOGLE_CLIENT_ID is missing.";
     }
     google.connect().then(
-      () => options.onNotice?.(portuguese ? "Google Calendar ligado." : "Google Calendar connected."),
-      (error: unknown) => options.onNotice?.(`${portuguese ? "Não foi possível ligar o Google Calendar" : "Could not connect Google Calendar"}: ${error instanceof Error ? error.message : String(error)}`),
+      () => options.onNotice?.(portuguese ? "Conta Google ligada (Calendar e Gmail)." : "Google account connected (Calendar and Gmail)."),
+      (error: unknown) => options.onNotice?.(`${portuguese ? "Não foi possível ligar a conta Google" : "Could not connect your Google account"}: ${error instanceof Error ? error.message : String(error)}`),
     );
-    return portuguese ? "Abri o browser para ligares o teu Google Calendar." : "I've opened your browser so you can connect Google Calendar.";
+    return portuguese ? "Abri o browser para ligares a tua conta Google." : "I've opened your browser so you can connect your Google account.";
   };
 
   const assistant = new VoiceAssistant({

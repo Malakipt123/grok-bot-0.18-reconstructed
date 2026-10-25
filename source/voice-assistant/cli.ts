@@ -1,6 +1,7 @@
 import readline from "node:readline";
 
 import { AudioPlayer, startRecording, type Recording } from "./audio.js";
+import { GMAIL_READONLY_SCOPE } from "./google-auth.js";
 import { loadVoiceAssistantConfig, VoiceAssistantConfigError } from "./config.js";
 import { createVoiceAssistantRuntime } from "./runtime.js";
 import { RoutineScheduler } from "./scheduler.js";
@@ -173,18 +174,19 @@ async function main(): Promise<void> {
     } else if (text.startsWith("/google")) {
       const google = runtime.google;
       const command = text.slice(7).trim() || "status";
-      if (!google) console.log("Google Calendar is not configured. Set GOOGLE_CLIENT_ID (and GOOGLE_CLIENT_SECRET) from a Desktop OAuth client.");
+      if (!google) console.log("Google is not configured. Set GOOGLE_CLIENT_ID (and GOOGLE_CLIENT_SECRET) from a Desktop OAuth client.");
       else if (command === "connect") {
         console.log("Opening your browser for Google sign-in…");
         await google.connect().then(
-          () => console.log("Google Calendar connected."),
+          () => console.log("Google account connected (Calendar and Gmail)."),
           (error) => console.error(`Google sign-in failed: ${errorMessage(error)}`),
         );
       } else if (command === "disconnect") {
         await google.disconnect();
-        console.log("Google Calendar disconnected and access revoked.");
+        console.log("Google account disconnected and access revoked.");
       } else {
-        console.log((await google.isConnected()) ? "Google Calendar: connected." : "Google Calendar: not connected. Use /google connect.");
+        if (!(await google.isConnected())) console.log("Google: not connected. Use /google connect.");
+        else console.log(`Google: connected. Gmail: ${(await google.hasScope(GMAIL_READONLY_SCOPE)) ? "allowed (read-only)" : "not allowed; use /google connect again and tick Gmail"}.`);
       }
     } else if (text.startsWith("/run ")) {
       const name = text.slice(5).trim();
