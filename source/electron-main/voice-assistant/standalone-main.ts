@@ -1,4 +1,4 @@
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -48,8 +48,8 @@ interface StandaloneElectron extends HudElectronPorts {
     whenReady(): Promise<void>;
     on(event: "window-all-closed" | "will-quit" | "second-instance", listener: () => void): void;
     quit(): void;
-    getLoginItemSettings(options?: { path?: string; args?: string[] }): { openAtLogin: boolean };
-    setLoginItemSettings(settings: { openAtLogin: boolean; path?: string; args?: string[] }): void;
+    getLoginItemSettings(options?: { path?: string; args?: string[]; name?: string }): { openAtLogin: boolean };
+    setLoginItemSettings(settings: { openAtLogin: boolean; path?: string; args?: string[]; name?: string }): void;
     readonly dock?: { hide(): void };
   };
   readonly Tray: new (image: unknown) => { setToolTip(text: string): void; setContextMenu(menu: unknown): void; destroy(): void };
@@ -65,9 +65,11 @@ const { app } = electron;
 const language = process.env.JARVIS_LANGUAGE || "pt";
 const portuguese = language.toLowerCase().startsWith("pt");
 // Packaged, the app itself is the program; from source, Electron needs the bundle path.
+// On Windows, "name" is the value under HKCU\...\Run, which the uninstaller removes.
 const loginItem = app.isPackaged
-  ? { path: process.execPath, args: [] }
-  : { path: process.execPath, args: [path.resolve(process.argv[1] ?? __filename)] };
+  ? { path: process.execPath, args: [], name: "Jarvis" }
+  : { path: process.execPath, args: [path.resolve(process.argv[1] ?? __filename)], name: "Jarvis" };
+const LOGIN_DEFAULT_MARKER = "login-default.json";
 // CI's Windows smoke test: write every status line to this file and quit after the first.
 const smokeLog = process.env.JARVIS_SMOKE_LOG;
 
@@ -91,6 +93,13 @@ if (!app.requestSingleInstanceLock()) {
 
   void app.whenReady().then(async () => {
     app.dock?.hide();
+    // The installed app starts with Windows from the first run; turning it off
+    // in the tray menu sticks, because the marker records that it was offered.
+    const loginMarker = path.join(app.getPath("userData"), LOGIN_DEFAULT_MARKER);
+    if (app.isPackaged && process.platform === "win32" && !existsSync(loginMarker)) {
+      app.setLoginItemSettings({ ...loginItem, openAtLogin: true });
+      writeFileSync(loginMarker, `${JSON.stringify({ openAtLoginByDefault: true, at: new Date().toISOString() })}\n`);
+    }
     const keys = new KeyStore(path.join(app.getPath("userData"), KEY_STORE_FILENAME), electron.safeStorage);
     const tray = new electron.Tray(electron.nativeImage.createFromBitmap(ringIcon(), { width: 32, height: 32, scaleFactor: 2 }));
     let status = portuguese ? "A iniciar…" : "Starting…";

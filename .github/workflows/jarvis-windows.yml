@@ -87,6 +87,11 @@ jobs:
           Get-Content $log
           if (-not (Select-String -Path $log -Pattern 'Ready\. Press Control\+Alt\+Space to talk' -Quiet)) { throw "Jarvis did not start" }
           if (Select-String -Path $log -Pattern '^failure' -Quiet) { throw "Jarvis reported a failure" }
+          $run = Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name Jarvis -ErrorAction SilentlyContinue
+          if (-not $run) { throw "Jarvis is not set to start at login" }
+          Write-Host "Start at login: $($run.Jarvis)"
+          $info = (Get-Item "$env:LOCALAPPDATA\Programs\Jarvis\Jarvis.exe").VersionInfo
+          if ($info.ProductName -ne "Jarvis") { throw "Jarvis.exe version info was not rewritten: $($info.ProductName)" }
       - name: Uninstall silently
         shell: pwsh
         run: |
@@ -95,6 +100,7 @@ jobs:
           for ($i = 0; $i -lt 30 -and (Test-Path "$env:LOCALAPPDATA\Programs\Jarvis\Jarvis.exe"); $i++) { Start-Sleep 1 }
           if (Test-Path "$env:LOCALAPPDATA\Programs\Jarvis\Jarvis.exe") { throw "Uninstall left Jarvis.exe behind" }
           if (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Jarvis.lnk") { throw "Uninstall left the shortcut behind" }
+          if (Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name Jarvis -ErrorAction SilentlyContinue) { throw "Uninstall left the login item behind" }
 
   release:
     needs: smoke

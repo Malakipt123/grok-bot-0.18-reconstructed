@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { access, copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { build } from "esbuild";
 
@@ -26,6 +26,10 @@ const FFMPEG = {
   sha256: "647e467caf82b9fa200a562769b5ff4d736aaf725804ed2c64ea9752106fa569",
 };
 
+// Rewrites the icon and version info inside Jarvis.exe. Installed only for the
+// build, outside the app's lockfile, at a pinned version.
+const RESEDIT = "resedit@3.1.0";
+
 const cache = path.join(root, ".build", "cache");
 const work = path.join(root, ".build", "windows");
 const appDir = path.join(work, "Jarvis");
@@ -42,6 +46,40 @@ async function exists(file) {
 
 async function sha256(file) {
   return createHash("sha256").update(await readFile(file)).digest("hex");
+}
+
+/** Gives Jarvis.exe the ring icon and "Jarvis" as its name in Task Manager and Windows Defender. */
+async function brandExecutable(exePath, ico, appVersion) {
+  const tools = path.join(root, ".build", "tools");
+  const entry = path.join(tools, "node_modules", "resedit", "dist", "index.js");
+  if (!(await exists(entry))) run("npm", ["install", "--no-save", "--no-audit", "--no-fund", "--ignore-scripts", "--prefix", tools, RESEDIT]);
+  const ResEdit = await import(pathToFileURL(entry).href);
+  // Electron's executable is not Authenticode-signed, and editing it would void a signature anyway.
+  const executable = ResEdit.NtExecutable.from(await readFile(exePath), { ignoreCert: true });
+  const resources = ResEdit.NtExecutableResource.from(executable);
+  const [group] = ResEdit.Resource.IconGroupEntry.fromEntries(resources.entries);
+  if (!group) throw new Error("Jarvis.exe has no icon resource to replace");
+  ResEdit.Resource.IconGroupEntry.replaceIconsForResource(resources.entries, group.id, group.lang, ResEdit.Data.IconFile.from(ico).icons.map((icon) => icon.data));
+  const [info] = ResEdit.Resource.VersionInfo.fromEntries(resources.entries);
+  if (info) {
+    const parts = [...appVersion.split(".").map((part) => Number.parseInt(part, 10) || 0), 0, 0, 0].slice(0, 4);
+    info.setFileVersion(...parts);
+    info.setProductVersion(...parts);
+    for (const language of info.getAllLanguagesForStringValues()) {
+      info.setStringValues(language, {
+        CompanyName: "grok-bot-0.18-reconstructed",
+        FileDescription: "Jarvis",
+        InternalName: "Jarvis",
+        OriginalFilename: "Jarvis.exe",
+        ProductName: "Jarvis",
+        FileVersion: appVersion,
+        ProductVersion: appVersion,
+      });
+    }
+    info.outputToResourceEntries(resources.entries);
+  }
+  resources.outputResource(executable);
+  await writeFile(exePath, Buffer.from(executable.generate()));
 }
 
 async function download(url, name, expected) {
@@ -98,7 +136,7 @@ run("unzip", ["-q", "-j", ffmpeg, `${FFMPEG.folder}/bin/ffmpeg.exe`, `${FFMPEG.f
 await rename(path.join(ffmpegDir, "LICENSE"), path.join(ffmpegDir, "LICENSE-ffmpeg.txt"));
 await copyFile(path.join(root, "docs", "JARVIS_WINDOWS.md"), path.join(appDir, "LEIA-ME.md"));
 
-// 4. The ring icon, for the installer and the Start menu shortcut.
+// 4. The ring icon, for Jarvis.exe itself, the installer and the Start menu shortcut.
 const icon = await build({
   absWorkingDir: root,
   bundle: true,
@@ -109,7 +147,9 @@ const icon = await build({
   logLevel: "warning",
 });
 const { ringIco } = await import(`data:text/javascript;base64,${Buffer.from(icon.outputFiles[0].contents).toString("base64")}`);
-await writeFile(path.join(appDir, "jarvis.ico"), ringIco());
+const ico = ringIco();
+await writeFile(path.join(appDir, "jarvis.ico"), ico);
+await brandExecutable(path.join(appDir, "Jarvis.exe"), ico, version);
 
 // 5. A portable zip, and the installer when NSIS is available.
 const zipFile = path.join(out, "Jarvis-win-x64.zip");

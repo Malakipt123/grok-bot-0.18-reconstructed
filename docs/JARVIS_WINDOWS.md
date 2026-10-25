@@ -22,6 +22,9 @@ exclusiva do macOS.
 5. Confirma o acesso ao microfone (passo 3, mais abaixo) e carrega em
    **Ctrl+Alt+Espaço**.
 
+- O Jarvis instalado **arranca sozinho quando entras no Windows**. Para
+  desligar, tira o visto em **Iniciar com o sistema** no menu do ícone; fica
+  desligado mesmo depois de atualizares.
 - As chaves ficam cifradas pelo Windows (DPAPI) em `%APPDATA%\Jarvis`. Para
   as mudar, usa **Chaves…** no menu do ícone ou abre o Jarvis outra vez no
   menu Iniciar.

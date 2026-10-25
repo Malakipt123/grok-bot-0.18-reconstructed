@@ -353,7 +353,11 @@ Portuguese step-by-step guide is in
 is a per-user install with no administrator rights, a Start menu shortcut and
 an uninstaller. It bundles ffmpeg. On first run a **setup window** asks for
 the keys, which are stored with Electron `safeStorage` (DPAPI) in
-`%APPDATA%\Jarvis\keys.json`; environment variables still win.
+`%APPDATA%\Jarvis\keys.json`; environment variables still win. The
+installed app starts at login from its first run (a `Jarvis` value under
+`HKCU\...\Run`, removed on uninstall); turning it off in the tray menu
+sticks. `Jarvis.exe` carries the ring icon and "Jarvis" version info,
+rewritten with `resedit` during packaging.
 `npm run package:windows` builds it on Linux or macOS with NSIS.
 `.github/workflows/jarvis-windows.yml` builds it on Ubuntu, installs,
 launches and uninstalls it on a Windows runner, and on `main` publishes it as

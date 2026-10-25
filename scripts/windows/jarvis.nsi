@@ -61,7 +61,6 @@ Section "Uninstall"
   Delete "$SMPROGRAMS\Jarvis.lnk"
   RMDir /r "$INSTDIR"
   DeleteRegKey HKCU "${UNINSTALL_KEY}"
-  ; "Start at login", if it was turned on from the tray menu.
+  ; "Start at login": on by default from the first run, or set in the tray menu.
   DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Jarvis"
-  DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "electron.app.Jarvis"
 SectionEnd

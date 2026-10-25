@@ -300,6 +300,10 @@ Segue primeiro os passos de [JARVIS_WINDOWS.md](JARVIS_WINDOWS.md).
   Esperado: O Bloco de Notas abre, sem janelas pretas de consola, e o volume fica em 20 %.
 
 - [ ] **Iniciar com o sistema**
-  No menu do ícone, ativa Iniciar com o sistema e reinicia a sessão do Windows.
-  Esperado: O Jarvis arranca sozinho e o atalho funciona.
+  Com o Jarvis instalado pelo instalador, reinicia a sessão do Windows.
+  Esperado: O Jarvis arranca sozinho (já vem ligado) e o atalho funciona. Desligado no menu do ícone, fica desligado depois de reinstalar.
+
+- [ ] **Ícone e nome**
+  Abre o Gestor de Tarefas com o Jarvis a correr.
+  Esperado: Aparece como «Jarvis» com o ícone do anel, não como Electron.
 
