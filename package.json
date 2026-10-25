@@ -25,7 +25,8 @@
     "source:typecheck": "tsc --project source/tsconfig.json",
     "verify": "node scripts/verify.mjs",
     "voice": "node scripts/voice-assistant.mjs",
-    "jarvis": "node scripts/jarvis-desktop.mjs"
+    "jarvis": "node scripts/jarvis-desktop.mjs",
+    "package:windows": "node scripts/package-windows.mjs"
   },
   "devDependencies": {
     "@electron/asar": "4.2.1",

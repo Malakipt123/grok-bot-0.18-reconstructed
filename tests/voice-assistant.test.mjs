@@ -1871,3 +1871,85 @@ test("Gmail is read-only, needs the granted scope, and marks email content as un
     await dispose();
   }
 });
+
+async function loadElectronModule(relative) {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "grok-voice-electron-module-"));
+  const output = path.join(temporary, "module.mjs");
+  await build({ entryPoints: [path.join(repoRoot, "source/electron-main/voice-assistant", relative)], outfile: output, bundle: true, format: "esm", platform: "node", target: "node22" });
+  const module = await import(`${pathToFileURL(output).href}?${Date.now()}`);
+  return { module, temporary, dispose: () => rm(temporary, { recursive: true, force: true }) };
+}
+
+test("setup keys are encrypted with the OS when possible, private otherwise, and blanks keep saved keys", async () => {
+  const { module, temporary, dispose } = await loadElectronModule("key-store.ts");
+  try {
+    // A stand-in for safeStorage: reversible, but nothing readable on disk.
+    const cipher = (available) => ({
+      isEncryptionAvailable: () => available,
+      encryptString: (text) => Buffer.from(text, "utf8").map((byte) => byte ^ 0x5a),
+      decryptString: (bytes) => Buffer.from(bytes).map((byte) => byte ^ 0x5a).toString("utf8"),
+    });
+    const file = path.join(temporary, "keys.json");
+    const store = new module.KeyStore(file, cipher(true));
+    assert.equal(await store.get("XAI_API_KEY"), null);
+    await store.save({ XAI_API_KEY: " xai-123 ", ELEVENLABS_API_KEY: "sk_456", EVIL: "x", GOOGLE_CLIENT_ID: "" });
+    const raw = await readFile(file, "utf8");
+    assert.equal(raw.includes("xai-123"), false);
+    assert.equal(Buffer.from(JSON.parse(raw).data, "base64").toString("utf8").includes("xai-123"), false, "encrypted at rest");
+    assert.equal((await stat(file)).mode & 0o777, 0o600);
+
+    const reopened = new module.KeyStore(file, cipher(true));
+    assert.equal(await reopened.get("XAI_API_KEY"), "xai-123");
+    assert.equal(await reopened.has("GOOGLE_CLIENT_ID"), false);
+    assert.equal(await reopened.get("EVIL"), null);
+    await reopened.save({ XAI_API_KEY: "", ELEVENLABS_API_KEY: "sk_new" });
+    assert.equal(await reopened.get("XAI_API_KEY"), "xai-123", "a blank field keeps the saved key");
+    assert.equal(await reopened.get("ELEVENLABS_API_KEY"), "sk_new");
+
+    assert.equal(await new module.KeyStore(file, { ...cipher(true), decryptString: () => { throw new Error("other user"); } }).has("XAI_API_KEY"), false, "undecryptable keys are asked for again");
+
+    const plainFile = path.join(temporary, "plain.json");
+    await new module.KeyStore(plainFile, cipher(false)).save({ XAI_API_KEY: "xai-plain" });
+    assert.equal(JSON.parse(await readFile(plainFile, "utf8")).encrypted, false);
+    assert.equal((await stat(plainFile)).mode & 0o777, 0o600);
+    assert.equal(await new module.KeyStore(plainFile, cipher(false)).get("XAI_API_KEY"), "xai-plain");
+  } finally {
+    await dispose();
+  }
+});
+
+test("setup page asks for the required keys, never shows saved ones, and has no network or Node access", async () => {
+  const { module, dispose } = await loadElectronModule("setup-page.ts");
+  try {
+    const fields = module.setupFields("pt", (key) => key === "ELEVENLABS_API_KEY");
+    const html = module.renderSetupPage(fields, module.setupLabels("pt"), true);
+    assert.match(html, /Content-Security-Policy" content="default-src 'none'/);
+    assert.match(html, /<input type="password" name="XAI_API_KEY" placeholder="xai-…" autocomplete="off" spellcheck="false" data-required>/);
+    assert.match(html, /name="ELEVENLABS_API_KEY" placeholder="Guardada; deixa vazio para manter" autocomplete="off" spellcheck="false">/, "a saved key is optional and not shown");
+    assert.doesNotMatch(html, /name="GOOGLE_CLIENT_ID"[^>]*data-required/);
+    assert.match(html, /cifradas pelo sistema/);
+    assert.match(module.renderSetupPage(fields, module.setupLabels("pt"), false), /num ficheiro privado/);
+    assert.match(html, new RegExp(`document\\.title = "${module.SETUP_SAVE_TITLE}"`));
+    assert.equal(module.setupLabels("en-GB").save, "Save and start");
+  } finally {
+    await dispose();
+  }
+});
+
+test("the ring icon becomes a multi-size Windows .ico", async () => {
+  const { module, dispose } = await loadElectronModule("ring-icon.ts");
+  try {
+    const ico = module.ringIco([16, 256]);
+    assert.deepEqual([ico.readUInt16LE(0), ico.readUInt16LE(2), ico.readUInt16LE(4)], [0, 1, 2]);
+    assert.deepEqual([ico.readUInt8(6), ico.readUInt8(22)], [16, 0], "256 px is stored as 0");
+    const second = { size: ico.readUInt32LE(22 + 8), offset: ico.readUInt32LE(22 + 12) };
+    assert.equal(second.offset + second.size, ico.length);
+    assert.equal(ico.readInt32LE(second.offset + 8), 512, "height includes the AND mask");
+    const pixels = module.ringIcon(32);
+    const alphaAt = (x, y) => pixels[(y * 32 + x) * 4 + 3];
+    assert.equal(alphaAt(0, 0), 0, "transparent corner");
+    assert.ok(alphaAt(16, 16) > 200, "bright core");
+  } finally {
+    await dispose();
+  }
+});

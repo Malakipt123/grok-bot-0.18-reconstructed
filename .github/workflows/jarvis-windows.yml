@@ -1,0 +1,125 @@
+name: Jarvis for Windows
+
+# Builds Jarvis-Setup.exe on Ubuntu, installs and launches it on a real
+# Windows runner, and on main publishes it as the "jarvis-windows-latest"
+# release, so the download link never changes.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - source/voice-assistant/**
+      - source/electron-main/voice-assistant/**
+      - scripts/package-windows.mjs
+      - scripts/windows/**
+      - docs/JARVIS_WINDOWS.md
+      - package-lock.json
+      - .github/workflows/jarvis-windows.yml
+  pull_request:
+    paths:
+      - source/voice-assistant/**
+      - source/electron-main/voice-assistant/**
+      - scripts/package-windows.mjs
+      - scripts/windows/**
+      - docs/JARVIS_WINDOWS.md
+      - package-lock.json
+      - .github/workflows/jarvis-windows.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 26.5.0
+          cache: npm
+      # Only esbuild and Electron's version and checksums are needed: no native builds.
+      - name: Install dependencies without install scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Install NSIS
+        run: sudo apt-get update -q && sudo apt-get install -y -q nsis
+      - name: Cache Electron and ffmpeg downloads
+        uses: actions/cache@v5
+        with:
+          path: .build/cache
+          key: jarvis-windows-${{ hashFiles('package-lock.json', 'scripts/package-windows.mjs') }}
+      - name: Build Jarvis-Setup.exe
+        run: npm run package:windows
+      - uses: actions/upload-artifact@v5
+        with:
+          name: jarvis-windows
+          path: dist/windows/
+          if-no-files-found: error
+
+  smoke:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: jarvis-windows
+      - name: Install silently
+        shell: pwsh
+        run: |
+          Start-Process -FilePath .\Jarvis-Setup.exe -ArgumentList '/S' -Wait
+          $dir = "$env:LOCALAPPDATA\Programs\Jarvis"
+          foreach ($file in "Jarvis.exe", "Uninstall.exe", "jarvis.ico", "resources\app\main.cjs", "resources\ffmpeg\ffmpeg.exe") {
+            if (-not (Test-Path "$dir\$file")) { throw "Missing $file after install" }
+          }
+          if (-not (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Jarvis.lnk")) { throw "No Start menu shortcut" }
+          & "$dir\resources\ffmpeg\ffmpeg.exe" -hide_banner -version | Select-Object -First 1
+      - name: Launch Jarvis
+        shell: pwsh
+        run: |
+          $log = "$env:RUNNER_TEMP\jarvis.log"
+          $env:XAI_API_KEY = "ci-placeholder"
+          $env:ELEVENLABS_API_KEY = "ci-placeholder"
+          $env:JARVIS_SMOKE_LOG = $log
+          $process = Start-Process -FilePath "$env:LOCALAPPDATA\Programs\Jarvis\Jarvis.exe" -PassThru
+          if (-not $process.WaitForExit(90000)) { $process.Kill(); throw "Jarvis did not report a status within 90 s" }
+          Get-Content $log
+          if (-not (Select-String -Path $log -Pattern 'Ready\. Press Control\+Alt\+Space to talk' -Quiet)) { throw "Jarvis did not start" }
+          if (Select-String -Path $log -Pattern '^failure' -Quiet) { throw "Jarvis reported a failure" }
+          $run = Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name Jarvis -ErrorAction SilentlyContinue
+          if (-not $run) { throw "Jarvis is not set to start at login" }
+          Write-Host "Start at login: $($run.Jarvis)"
+          $info = (Get-Item "$env:LOCALAPPDATA\Programs\Jarvis\Jarvis.exe").VersionInfo
+          if ($info.ProductName -ne "Jarvis") { throw "Jarvis.exe version info was not rewritten: $($info.ProductName)" }
+      - name: Uninstall silently
+        shell: pwsh
+        run: |
+          Start-Process -FilePath "$env:LOCALAPPDATA\Programs\Jarvis\Uninstall.exe" -ArgumentList '/S' -Wait
+          # The uninstaller hands over to a copy of itself in %TEMP%.
+          for ($i = 0; $i -lt 30 -and (Test-Path "$env:LOCALAPPDATA\Programs\Jarvis\Jarvis.exe"); $i++) { Start-Sleep 1 }
+          if (Test-Path "$env:LOCALAPPDATA\Programs\Jarvis\Jarvis.exe") { throw "Uninstall left Jarvis.exe behind" }
+          if (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Jarvis.lnk") { throw "Uninstall left the shortcut behind" }
+          if (Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name Jarvis -ErrorAction SilentlyContinue) { throw "Uninstall left the login item behind" }
+
+  release:
+    needs: smoke
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: jarvis-windows
+      - name: Publish jarvis-windows-latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release delete jarvis-windows-latest --yes --cleanup-tag || true
+          gh release create jarvis-windows-latest Jarvis-Setup.exe Jarvis-win-x64.zip \
+            --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "Jarvis para Windows" \
+            --notes "Instalador do Jarvis (assistente de voz Grok + ElevenLabs) para Windows 10/11, construído a partir de ${GITHUB_SHA::7}. Descarrega Jarvis-Setup.exe, abre-o e cola as tuas chaves na janela que aparece. Guia: docs/JARVIS_WINDOWS.md."

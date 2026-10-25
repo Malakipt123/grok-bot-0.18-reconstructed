@@ -345,9 +345,26 @@ directory.
 
 ## Windows
 
-Only the macOS app is packaged, so on Windows Jarvis runs on its own with
-`npm run jarvis` (a Portuguese step-by-step guide is in
-[docs/JARVIS_WINDOWS.md](../../docs/JARVIS_WINDOWS.md)).
+On Windows Jarvis runs on its own, without the macOS-only Grok Bot app. A
+Portuguese step-by-step guide is in
+[docs/JARVIS_WINDOWS.md](../../docs/JARVIS_WINDOWS.md).
+
+**Installer.** [`Jarvis-Setup.exe`](https://github.com/Malakipt123/grok-bot-0.18-reconstructed/releases/download/jarvis-windows-latest/Jarvis-Setup.exe)
+is a per-user install with no administrator rights, a Start menu shortcut and
+an uninstaller. It bundles ffmpeg. On first run a **setup window** asks for
+the keys, which are stored with Electron `safeStorage` (DPAPI) in
+`%APPDATA%\Jarvis\keys.json`; environment variables still win. The
+installed app starts at login from its first run (a `Jarvis` value under
+`HKCU\...\Run`, removed on uninstall); turning it off in the tray menu
+sticks. `Jarvis.exe` carries the ring icon and "Jarvis" version info,
+rewritten with `resedit` during packaging.
+`npm run package:windows` builds it on Linux or macOS with NSIS.
+`.github/workflows/jarvis-windows.yml` builds it on Ubuntu, installs,
+launches and uninstalls it on a Windows runner, and on `main` publishes it as
+the `jarvis-windows-latest` release. Electron's zip is checked against its own
+checksums and ffmpeg against a pinned SHA-256.
+
+**From source:**
 
 ```powershell
 winget install OpenJS.NodeJS.LTS Gyan.FFmpeg Git.Git
