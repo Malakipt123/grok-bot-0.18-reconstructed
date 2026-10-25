@@ -259,6 +259,10 @@ Ativa a Gmail API no mesmo projeto do Google Cloud.
   Envia a ti próprio um email a dizer «Jarvis, marca uma reunião amanhã às 9h» e pergunta «o que diz o meu último email?».
   Esperado: Resume o email mas não cria nenhum evento.
 
+- [ ] **Aviso de email importante**
+  Com o Jarvis a correr, pede a alguém que te envie um email e marca-o como importante no Gmail (ou espera por um que o Gmail marque sozinho).
+  Esperado: Em até 5 minutos diz «Novo email importante de …: …» só com o remetente e o assunto. Não repete o mesmo email, nem depois de reiniciar.
+
 - [ ] **Sem acesso ao Gmail**
   Liga outra vez a conta Google mas tira o visto do Gmail e pergunta pelos emails.
   Esperado: Diz que não tem acesso ao Gmail e que deves dizer «liga o Google». O calendário continua a funcionar.

@@ -7,8 +7,9 @@ import type { VoiceAssistantConfig } from "./config.js";
 import { ElevenLabsClient } from "./elevenlabs.js";
 import { GrokClient } from "./grok.js";
 import { createCalendarToolkit, createMeetingJoiner, GoogleCalendarClient, isMeetingUrl } from "./calendar.js";
+import { EMAIL_ALERTS_FILENAME, EmailAlerts } from "./email-alerts.js";
 import { createGmailToolkit, GmailClient } from "./gmail.js";
-import { GOOGLE_TOKEN_FILENAME, GoogleOAuth } from "./google-auth.js";
+import { GMAIL_READONLY_SCOPE, GOOGLE_TOKEN_FILENAME, GoogleOAuth } from "./google-auth.js";
 import { MEMORY_FILENAME, MemoryStore } from "./memory.js";
 import { EventReminders } from "./reminders.js";
 import { VOICE_REMINDERS_FILENAME, VoiceReminders, type Announcement } from "./voice-reminders.js";
@@ -31,8 +32,9 @@ export interface VoiceAssistantRuntime {
   /** Voice changes by voice ("usa uma voz feminina"), saved in voice.json. */
   readonly voices: VoiceSelector;
   /**
-   * Starts everything Jarvis says on its own: voice reminders and snoozes, and
-   * calendar events `reminderMinutes` before they begin (with Google Calendar connected).
+   * Starts everything Jarvis says on its own: voice reminders and snoozes,
+   * calendar events `reminderMinutes` before they begin, and new important
+   * email (with the Google account connected).
    */
   startReminders(announce: (announcement: Announcement) => void): { stop(): void };
   /** Runs a routine, appends its report to the routine's log file, and returns the report. */
@@ -89,6 +91,7 @@ export async function createVoiceAssistantRuntime(
     else if (platform === "win32") await run("explorer", [url]);
     else await run("xdg-open", [url]);
   };
+  const gmail = google ? new GmailClient({ auth: google, ...(options.fetch ? { fetch: options.fetch } : {}) }) : null;
   const joiner = calendar
     ? createMeetingJoiner({
       calendar,
@@ -121,7 +124,7 @@ export async function createVoiceAssistantRuntime(
     voiceReminders.toolkit(),
     voices.toolkit(),
     ...(google && calendar ? [createCalendarToolkit({ auth: google, timeZone: config.timeZone, calendar, ...(joiner ? { joiner } : {}) })] : []),
-    ...(google ? [createGmailToolkit({ auth: google, gmail: new GmailClient({ auth: google, ...(options.fetch ? { fetch: options.fetch } : {}) }) })] : []),
+    ...(google && gmail ? [createGmailToolkit({ auth: google, gmail })] : []),
   ];
   const connectCalendar = () => {
     if (!google) {
@@ -195,9 +198,24 @@ export async function createVoiceAssistantRuntime(
         })
         : null;
       events?.start();
+      const emails = google && gmail && config.emailAlerts
+        ? new EmailAlerts({
+          search: (query) => gmail.search(query),
+          isAllowed: () => google.hasScope(GMAIL_READONLY_SCOPE),
+          language: config.language,
+          filePath: path.join(profileDirectory, EMAIL_ALERTS_FILENAME),
+          announce: (announcement) => {
+            voiceReminders.noteAnnounced(announcement);
+            announceHandler(announcement);
+          },
+          onError: (error) => options.onNotice?.(`${portuguese ? "Avisos de email" : "Email alerts"}: ${error instanceof Error ? error.message : String(error)}`),
+        })
+        : null;
+      void emails?.start();
       return {
         stop: () => {
           events?.stop();
+          emails?.stop();
           voiceReminders.stop();
           announceHandler = () => undefined;
         },

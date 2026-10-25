@@ -198,6 +198,17 @@ banco esta semana?". The daily brief mentions important unread email too.
   reminders or remember facts because an email asks to.
 - **Privacy.** To summarise an email, its sender, subject and text are sent to
   Grok (xAI). Nothing is stored locally.
+- **Spoken alerts.** Every 5 minutes Jarvis checks for unread email that
+  Gmail itself marks as **Important** (promotions and social are skipped)
+  and says "Novo email importante de Ana Silva: Contrato.", or "Tens 3 emails
+  importantes novos, de Ana, Banco e Rui." for several. Only the sender's
+  name and the subject are spoken, straight to speech: the body is never
+  read and nothing goes through Grok, so an email cannot steer Jarvis. Links
+  and addresses are left out. Alerts wait until you finish talking, can be
+  snoozed with "adia", and mail already waiting when alerts first start is
+  not announced. Ids already announced are kept in `email-alerts.json`
+  (0600). Gmail learns what is important to you; mark a message as
+  important, or not, to teach it. `JARVIS_EMAIL_ALERTS=off` turns alerts off.
 - **Already connected before Gmail support?** Your consent only covers
   Calendar. Say **"liga o Google"** (or run `/google connect`) once more and
   tick Gmail; `/google status` shows whether Gmail is allowed. Google's
@@ -318,6 +329,7 @@ Pass `--mute` for text-only replies.
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | unset (Calendar off) |
 | `JARVIS_TIMEZONE` | system time zone |
 | `JARVIS_REMINDER_MINUTES` | `10` (`off` disables event reminders) |
+| `JARVIS_EMAIL_ALERTS` | on (`off` stops spoken alerts for new important email) |
 
 ## ASSISTANT.md
 

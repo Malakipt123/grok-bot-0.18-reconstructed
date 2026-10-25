@@ -1953,3 +1953,71 @@ test("the ring icon becomes a multi-size Windows .ico", async () => {
     await dispose();
   }
 });
+
+test("email alerts speak only new important mail, sender and subject, once, and survive a restart", async () => {
+  const { module, temporary, dispose } = await loadModule("email-alerts.ts");
+  try {
+    assert.equal(module.senderName("Ana Silva <ana@example.com>"), "Ana Silva");
+    assert.equal(module.senderName("\"Banco X\" <no-reply@banco.pt>"), "Banco X");
+    assert.equal(module.senderName("joao@example.com"), "joao");
+    const mail = (id, from, subject) => ({ id, from, subject, date: "", snippet: "ignored body", unread: true });
+    assert.equal(module.emailAlertText([mail("a", "Ana Silva <ana@x.pt>", "Contrato https://evil.example/x para ana@x.pt")], "pt"),
+      "Novo email importante de Ana Silva: Contrato para.");
+    assert.equal(module.emailAlertText([mail("a", "Ana <a@x>", "1"), mail("b", "Banco <b@x>", "2"), mail("c", "Ana <a@x>", "3"), mail("d", "Rui <r@x>", "4"), mail("e", "Eva <e@x>", "5")], "pt"),
+      "Tens 5 emails importantes novos, de Ana, Banco, Rui e mais 1.");
+
+    let inbox = [mail("old1", "Antigo <o@x>", "Já estava")];
+    let allowed = false;
+    let failing = false;
+    const queries = [];
+    const spoken = [];
+    const errors = [];
+    const file = path.join(temporary, "email-alerts.json");
+    const alerts = (now = 1_000) => new module.EmailAlerts({
+      search: async (query) => { queries.push(query); if (failing) throw new Error("Gmail 503"); return inbox; },
+      isAllowed: async () => allowed,
+      announce: (announcement) => spoken.push(announcement),
+      language: "pt",
+      filePath: file,
+      pollMs: 3_600_000,
+      now: () => now,
+      onError: (error) => errors.push(error.message),
+    });
+
+    const first = alerts();
+    await first.start();
+    await first.poll();
+    assert.deepEqual(queries, [], "nothing is searched until Gmail is allowed");
+    allowed = true;
+    await first.poll();
+    assert.equal(queries[0], module.EMAIL_ALERTS_QUERY);
+    assert.deepEqual(spoken, [], "mail already waiting on the first run is not announced");
+
+    inbox = [mail("new1", "Ana Silva <ana@x.pt>", "Contrato"), ...inbox];
+    await first.poll();
+    assert.equal(spoken.length, 1);
+    assert.equal(spoken[0].text, "Novo email importante de Ana Silva: Contrato.");
+    assert.equal(spoken[0].title, "Jarvis · Gmail");
+    assert.equal(spoken[0].expiresAt, 1_000 + 30 * 60_000);
+    await first.poll();
+    assert.equal(spoken.length, 1, "the same email is announced once");
+    assert.equal((await stat(file)).mode & 0o777, 0o600);
+    first.stop();
+
+    const restarted = alerts();
+    await restarted.start();
+    await restarted.poll();
+    assert.equal(spoken.length, 1, "no repeat after a restart");
+    inbox = [mail("new2", "Banco <b@x>", "Extrato"), mail("new3", "Rui <r@x>", "Jantar"), ...inbox];
+    await restarted.poll();
+    assert.equal(spoken.at(-1).text, "Tens 2 emails importantes novos, de Banco, Rui.");
+
+    failing = true;
+    await restarted.poll();
+    await restarted.poll();
+    assert.deepEqual(errors, ["Gmail 503"], "one notice per outage");
+    restarted.stop();
+  } finally {
+    await dispose();
+  }
+});
