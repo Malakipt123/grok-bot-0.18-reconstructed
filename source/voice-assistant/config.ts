@@ -24,6 +24,8 @@ export interface VoiceAssistantConfig {
   readonly timeZone: string;
   /** Minutes before a calendar event to announce it; null turns reminders off. */
   readonly reminderMinutes: number | null;
+  /** Speak new important Gmail (sender and subject) once Gmail is allowed. */
+  readonly emailAlerts: boolean;
 }
 
 export class VoiceAssistantConfigError extends Error {
@@ -65,6 +67,7 @@ export function loadVoiceAssistantConfig(env: NodeJS.ProcessEnv = process.env): 
     timeZone: validTimeZone(env.JARVIS_TIMEZONE?.trim()) ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
     // "off", 0 or anything unparsable disables reminders; a lead over two hours is clamped.
     reminderMinutes: Number.isFinite(reminderMinutes) && reminderMinutes > 0 ? Math.min(reminderMinutes, 120) : null,
+    emailAlerts: env.JARVIS_EMAIL_ALERTS?.trim().toLowerCase() !== "off",
   };
 }
 

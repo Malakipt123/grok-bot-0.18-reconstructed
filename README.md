@@ -114,7 +114,8 @@ and a local `memory.json` keeps facts about you and the recent conversation
 across restarts. With your own Google OAuth client it can also read and create
 Google Calendar events, remind you out loud ten minutes before each one, and
 open the Google Meet when you say "abre a reunião". The same sign-in lets it
-read (never send) your Gmail: "tenho emails importantes?".
+read (never send) your Gmail: "tenho emails importantes?", and it tells you
+out loud when important new email arrives.
 It needs `XAI_API_KEY` and `ELEVENLABS_API_KEY` (as app secrets or environment
 variables) and sox or ffmpeg; see
 [source/voice-assistant/README.md](source/voice-assistant/README.md).
