@@ -15,8 +15,9 @@ The repo is ~7M tokens of text; never read whole directories. About 60% of
 - `source/electron-main/generated/`
 - `*.gen.ts`
 
-Exclude them when searching unless the question is about a wire format, e.g.
-`rg -n PATTERN source -g '!**/generated/**' -g '!*.gen.ts'`. Start from the
+The root `.ignore` file already hides them from ripgrep (and from Grep/Glob).
+When the question is about a wire format, search them explicitly with
+`rg --no-ignore -n PATTERN source/packages/proto/generated`. Start from the
 map below, then grep inside the named directory.
 
 ## Map
