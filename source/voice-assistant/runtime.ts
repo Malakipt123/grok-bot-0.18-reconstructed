@@ -9,6 +9,7 @@ import { GrokClient } from "./grok.js";
 import { createCalendarToolkit, createMeetingJoiner, GoogleCalendarClient, isMeetingUrl } from "./calendar.js";
 import { EMAIL_ALERTS_FILENAME, EmailAlerts } from "./email-alerts.js";
 import { createGmailToolkit, GmailClient } from "./gmail.js";
+import { createMarketToolkit } from "./markets.js";
 import { GMAIL_READONLY_SCOPE, GOOGLE_TOKEN_FILENAME, GoogleOAuth } from "./google-auth.js";
 import { MEMORY_FILENAME, MemoryStore } from "./memory.js";
 import { EventReminders } from "./reminders.js";
@@ -123,6 +124,7 @@ export async function createVoiceAssistantRuntime(
   const toolkits = [
     voiceReminders.toolkit(),
     voices.toolkit(),
+    createMarketToolkit(),
     ...(google && calendar ? [createCalendarToolkit({ auth: google, timeZone: config.timeZone, calendar, ...(joiner ? { joiner } : {}) })] : []),
     ...(google && gmail ? [createGmailToolkit({ auth: google, gmail })] : []),
   ];
