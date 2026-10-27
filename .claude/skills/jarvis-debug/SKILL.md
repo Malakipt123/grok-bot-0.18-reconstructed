@@ -49,7 +49,9 @@ npm test   # all tests
 
 Write a failing test in `tests/voice-assistant.test.mjs` that reproduces the
 report before changing code. Follow the existing style: `loadModule(...)`,
-`actionContext(...)`, `node:assert/strict`.
+`actionContext(...)`, `node:assert/strict`. For a hard or intermittent bug,
+follow the `diagnosing-bugs` skill's loop (tight red test, ranked hypotheses,
+tagged debug logs removed at the end); for new behavior, the `tdd` skill.
 
 ## 3. Reproduce with real keys (the user's machine)
 
