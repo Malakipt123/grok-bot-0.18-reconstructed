@@ -22,6 +22,15 @@ export interface IntradayBars {
   readonly minutesToClose: number | null;
 }
 
+export interface Quote {
+  readonly symbol: string;
+  readonly currency: string;
+  readonly price: number;
+  readonly changePct: number;
+  /** What the change is measured against, for the spoken answer. */
+  readonly changeBasis: "previous close" | "24 hours";
+}
+
 export interface ReplayInput {
   readonly bars: readonly Bar[];
   readonly entry: number;
@@ -46,6 +55,7 @@ export interface ReplayResult {
 }
 
 const DEFAULT_HORIZON_MINUTES = 240;
+const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_HORIZON_MINUTES = 1_440;
 const CRYPTO_ALIASES: Record<string, string> = {
   BITCOIN: "BTCUSDT", BTC: "BTCUSDT",
@@ -106,15 +116,34 @@ export function normalizeSymbol(market: Market, raw: string): string {
 export interface MarketDataOptions {
   readonly fetch?: typeof fetch;
   readonly now?: () => Date;
+  readonly timeoutMs?: number;
 }
 
 export class MarketData {
   readonly #fetch: typeof fetch;
   readonly #now: () => Date;
+  readonly #timeoutMs: number;
 
   constructor(options: MarketDataOptions = {}) {
     this.#fetch = options.fetch ?? fetch;
     this.#now = options.now ?? (() => new Date());
+    this.#timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
+  }
+
+  async quote(market: Market, rawSymbol: string): Promise<Quote> {
+    const symbol = normalizeSymbol(market, rawSymbol);
+    if (market === "crypto") {
+      const ticker = (await this.#json(`https://data-api.binance.vision/api/v3/ticker/24hr?symbol=${symbol}`)) as { lastPrice?: string; priceChangePercent?: string };
+      const price = Number(ticker.lastPrice);
+      if (!(price > 0)) throw new Error(`No market data for ${symbol}`);
+      return { symbol, currency: cryptoCurrency(symbol), price, changePct: Number(ticker.priceChangePercent) || 0, changeBasis: "24 hours" };
+    }
+    const meta = (await this.#yahooChart(symbol)).meta;
+    const price = meta?.regularMarketPrice;
+    const previous = meta?.chartPreviousClose ?? meta?.previousClose;
+    if (typeof price !== "number" || !(price > 0)) throw new Error(`No market data for ${symbol}`);
+    const changePct = typeof previous === "number" && previous > 0 ? ((price - previous) / previous) * 100 : 0;
+    return { symbol, currency: meta?.currency ?? "USD", price, changePct, changeBasis: "previous close" };
   }
 
   async intraday(market: Market, rawSymbol: string): Promise<IntradayBars> {
@@ -122,11 +151,16 @@ export class MarketData {
     return market === "crypto" ? this.#binance(symbol) : this.#yahoo(symbol);
   }
 
-  async #yahoo(symbol: string): Promise<IntradayBars> {
+  async #yahooChart(symbol: string): Promise<YahooResult> {
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1m&range=1d`;
     const body = (await this.#json(url)) as YahooChart;
     const result = body.chart?.result?.[0];
     if (!result) throw new Error(`No market data for ${symbol}${body.chart?.error?.description ? `: ${body.chart.error.description}` : ""}`);
+    return result;
+  }
+
+  async #yahoo(symbol: string): Promise<IntradayBars> {
+    const result = await this.#yahooChart(symbol);
     const quote = result.indicators?.quote?.[0];
     const times = result.timestamp ?? [];
     const bars: Bar[] = [];
@@ -149,25 +183,38 @@ export class MarketData {
     if (!Array.isArray(rows)) throw new Error(`No market data for ${symbol}`);
     const bars = rows.map((row: unknown[]) => ({ time: Number(row[0]), high: Number(row[2]), low: Number(row[3]), close: Number(row[4]) }))
       .filter((bar) => bar.close > 0);
-    return { symbol, currency: symbol.endsWith("EUR") ? "EUR" : symbol.endsWith("BTC") ? "BTC" : "USD", bars, minutesToClose: null };
+    return { symbol, currency: cryptoCurrency(symbol), bars, minutesToClose: null };
   }
 
   async #json(url: string): Promise<unknown> {
-    const response = await this.#fetch(url, { headers: { accept: "application/json", "user-agent": "Mozilla/5.0 (Jarvis paper trading)" } });
+    // A stalled market API must not leave Jarvis silent mid-reply.
+    const response = await this.#fetch(url, {
+      headers: { accept: "application/json", "user-agent": "Mozilla/5.0 (Jarvis paper trading)" },
+      signal: AbortSignal.timeout(this.#timeoutMs),
+    });
     if (!response.ok) throw new Error(`Market data request failed (${response.status})`);
     return response.json();
   }
 }
 
-interface YahooChart {
-  chart?: {
-    result?: Array<{
-      meta?: { currency?: string; currentTradingPeriod?: { regular?: { end?: number } } };
-      timestamp?: number[];
-      indicators?: { quote?: Array<{ high?: Array<number | null>; low?: Array<number | null>; close?: Array<number | null> }> };
-    }>;
-    error?: { description?: string } | null;
+interface YahooResult {
+  meta?: {
+    currency?: string;
+    regularMarketPrice?: number;
+    chartPreviousClose?: number;
+    previousClose?: number;
+    currentTradingPeriod?: { regular?: { end?: number } };
   };
+  timestamp?: number[];
+  indicators?: { quote?: Array<{ high?: Array<number | null>; low?: Array<number | null>; close?: Array<number | null> }> };
+}
+
+interface YahooChart {
+  chart?: { result?: YahooResult[]; error?: { description?: string } | null };
+}
+
+function cryptoCurrency(pair: string): string {
+  return pair.endsWith("EUR") ? "EUR" : pair.endsWith("BTC") ? "BTC" : "USD";
 }
 
 /** mulberry32: small, fast and seedable, so the same question gives the same answer. */
@@ -244,7 +291,7 @@ export function replayTrade(input: ReplayInput): ReplayResult {
   };
 }
 
-function round(value: number): string {
+export function round(value: number): string {
   const digits = value >= 100 ? 2 : value >= 1 ? 4 : 6;
   return String(Number(value.toFixed(digits)));
 }
@@ -265,15 +312,15 @@ export function createMarketToolkit(options: MarketToolkitOptions = {}): Assista
     ].join(" "),
     async run(name, args) {
       const market: Market = args.market === "crypto" ? "crypto" : "stock";
-      const intraday = await data.intraday(market, String(args.symbol ?? ""));
-      const last = intraday.bars.at(-1);
-      if (!last) return `No trades for ${intraday.symbol} today yet.`;
+      const symbol = String(args.symbol ?? "");
       if (name === "market_price") {
-        const first = intraday.bars[0]!;
-        const change = ((last.close - first.close) / first.close) * 100;
-        return `${intraday.symbol} last ${round(last.close)} ${intraday.currency}, ${change >= 0 ? "+" : ""}${change.toFixed(2)}% since ${new Date(first.time).toISOString()}.`;
+        const quote = await data.quote(market, symbol);
+        return `${quote.symbol} last ${round(quote.price)} ${quote.currency}, ${quote.changePct >= 0 ? "+" : ""}${quote.changePct.toFixed(2)}% vs ${quote.changeBasis}.`;
       }
       if (name === "simulate_trade") {
+        const intraday = await data.intraday(market, symbol);
+        const last = intraday.bars.at(-1);
+        if (!last) return `No trades for ${intraday.symbol} today yet.`;
         const requested = Number(args.horizon_minutes);
         const horizon = Number.isInteger(requested) && requested > 0
           ? Math.min(requested, MAX_HORIZON_MINUTES)

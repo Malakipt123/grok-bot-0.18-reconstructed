@@ -2087,11 +2087,12 @@ test("market toolkit reads public Yahoo and Binance data and simulates to the se
       requests.push(String(url));
       if (String(url).includes("yahoo")) {
         return new Response(JSON.stringify({ chart: { result: [{
-          meta: { currency: "USD", currentTradingPeriod: { regular: { end: Math.floor(now.getTime() / 1000) + 90 * 60 } } },
+          meta: { currency: "USD", regularMarketPrice: 105, chartPreviousClose: 100, currentTradingPeriod: { regular: { end: Math.floor(now.getTime() / 1000) + 90 * 60 } } },
           timestamp: bars.map((bar) => bar.time / 1000),
           indicators: { quote: [{ high: bars.map((bar) => bar.high), low: bars.map((bar) => bar.low), close: [null, ...bars.slice(1).map((bar) => bar.close)] }] },
         }], error: null } }));
       }
+      if (String(url).includes("ticker/24hr")) return new Response(JSON.stringify({ lastPrice: "64000.5", priceChangePercent: "-2.345" }));
       return new Response(JSON.stringify(bars.map((bar) => [bar.time, "0", String(bar.high), String(bar.low), String(bar.close), "1"])));
     };
     const toolkit = module.createMarketToolkit({ data: new module.MarketData({ fetch, now: () => now }) });
@@ -2100,9 +2101,13 @@ test("market toolkit reads public Yahoo and Binance data and simulates to the se
     assert.ok(!toolkit.handles("place_order"));
     assert.match(await toolkit.prompt(), /never place/);
 
-    const price = await toolkit.run("market_price", { market: "crypto", symbol: "bitcoin" });
-    assert.match(price, /^BTCUSDT last [\d.]+ USD, [+-][\d.]+% since /);
-    assert.match(requests.at(-1), /^https:\/\/data-api\.binance\.vision\/api\/v3\/klines\?symbol=BTCUSDT&interval=1m&limit=1000$/);
+    assert.equal(await toolkit.run("market_price", { market: "crypto", symbol: "bitcoin" }), "BTCUSDT last 64000.5 USD, -2.35% vs 24 hours.");
+    assert.equal(requests.at(-1), "https://data-api.binance.vision/api/v3/ticker/24hr?symbol=BTCUSDT");
+    assert.equal(await toolkit.run("market_price", { market: "stock", symbol: "edp.ls" }), "EDP.LS last 105 USD, +5.00% vs previous close.");
+    // Unknown tools fail without touching the network.
+    const before = requests.length;
+    assert.equal(await toolkit.run("place_order", { market: "stock", symbol: "AAPL" }), "Error: unknown tool place_order");
+    assert.equal(requests.length, before);
 
     const last = bars.at(-1).close;
     const stock = await toolkit.run("simulate_trade", { market: "stock", symbol: "aapl", target: last * 1.005, stop: last * 0.995 });
@@ -2117,6 +2122,72 @@ test("market toolkit reads public Yahoo and Binance data and simulates to the se
     assert.match(crypto, /next 30 minutes/);
 
     await assert.rejects(toolkit.run("simulate_trade", { market: "stock", symbol: "AAPL", target: 90, stop: 80, entry: 100 }), /other side/);
+
+    // A request that never answers is abandoned instead of blocking the reply.
+    const stalled = new module.MarketData({ timeoutMs: 20, fetch: (url, init) => new Promise((resolve, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason))) });
+    await assert.rejects(stalled.quote("crypto", "BTC"), /timeout|aborted/i);
+  } finally {
+    await dispose();
+  }
+});
+
+test("price alerts fire once for levels, rate-limit moves, persist, and refuse alerts already true", async () => {
+  const { module, temporary, dispose } = await loadModule("price-alerts.ts");
+  try {
+    let price = 100;
+    let now = 1_790_000_000_000;
+    const minute = 60_000;
+    // Flat for an hour, then the last bar jumps to `price`.
+    const intraday = async (market, symbol) => ({
+      symbol, currency: "USD", minutesToClose: null,
+      bars: [...Array.from({ length: 60 }, (_, index) => ({ time: now - (60 - index) * minute, high: 100, low: 100, close: 100 })), { time: now, high: price, low: price, close: price }],
+    });
+    const spoken = [];
+    const filePath = path.join(temporary, "profile", "price-alerts.json");
+    const alerts = new module.PriceAlerts({ intraday, filePath, language: "pt-PT", announce: (announcement) => spoken.push(announcement), now: () => now });
+    const toolkit = alerts.toolkit();
+    assert.deepEqual((await toolkit.tools()).map((tool) => tool.function.name), ["price_alert_add", "price_alert_list", "price_alert_remove"]);
+    assert.match(await toolkit.prompt(), /No price alerts are set/);
+
+    await assert.rejects(alerts.add("crypto", "BTC", "above", 90), /already above 90 \(now 100\)/);
+    assert.equal(await toolkit.run("price_alert_add", { market: "crypto", symbol: "bitcoin", kind: "above", price: 110 }), "Alert set: [p1] crypto BTCUSDT above 110.");
+    assert.equal(await toolkit.run("price_alert_add", { market: "stock", symbol: "aapl", kind: "move", percent: 3 }), "Alert set: [p2] stock AAPL moves 3% within an hour.");
+    assert.equal(await toolkit.run("price_alert_add", { market: "stock", symbol: "AAPL", kind: "sideways" }), "Error: kind must be above, below or move");
+    assert.equal((await stat(filePath)).mode & 0o777, 0o600);
+
+    await alerts.poll();
+    assert.equal(spoken.length, 0);
+
+    price = 111;
+    await alerts.poll();
+    assert.equal(spoken.length, 1);
+    assert.equal(spoken[0].text, "A BTC passou acima de 110 USD: está a 111 USD. A AAPL subiu 11.0% na última hora: está a 111 USD.");
+    assert.equal(spoken[0].title, "Jarvis · Mercados");
+
+    // The level alert is gone; the move alert waits an hour before repeating.
+    now += 5 * minute;
+    await alerts.poll();
+    assert.equal(spoken.length, 1);
+    assert.deepEqual(alerts.alerts.map((alert) => alert.id), ["p2"]);
+    now += 61 * minute;
+    price = 95;
+    await alerts.poll();
+    assert.equal(spoken.at(-1).text, "A AAPL caiu 5.0% na última hora: está a 95 USD.");
+
+    // A restart reads the same alerts and keeps numbering.
+    const reopened = new module.PriceAlerts({ intraday, filePath, language: "en", announce: () => undefined });
+    assert.match(await reopened.toolkit().prompt(), /Active alerts: \[p2\] stock AAPL moves 3% within an hour/);
+    assert.equal((await reopened.add("crypto", "ETH", "below", 50)).id, "p3");
+    assert.equal(await reopened.toolkit().run("price_alert_remove", { id: "all" }), "Removed 2 alerts.");
+    assert.equal(await reopened.toolkit().run("price_alert_list", {}), "No price alerts.");
+
+    // A failing market API is reported once, not on every poll.
+    const errors = [];
+    const broken = new module.PriceAlerts({ intraday: async () => { throw new Error("down"); }, filePath: path.join(temporary, "broken.json"), language: "en", announce: () => undefined, onError: (error) => errors.push(error) });
+    await broken.add("stock", "AAPL", "move", undefined, 2);
+    await broken.poll();
+    await broken.poll();
+    assert.equal(errors.length, 1);
   } finally {
     await dispose();
   }
