@@ -84,5 +84,11 @@ CI (`.github/workflows/check.yml`) runs `check`, `frontend:build` and
   `research-archives/` are Git LFS objects with pinned SHA-256.
 - Secrets come from the desktop secrets bridge or environment variables, never
   from source files.
+- Never install third-party agent skills, plugins or global packages
+  (`npx skills add`, `npm install -g`, `pip install`) without the user's
+  approval; `.claude/settings.json` makes these commands ask first. Read a
+  skill's `SKILL.md` and any scripts it runs before proposing it, and never
+  pass `-y` to skip a confirmation. Jarvis keys and Google tokens live on the
+  developer's machine, so a skill that reads files and sends data can leak them.
 - Keep commits focused and say whether they touch runtime source, the editable
   frontend, the pinned renderer patch, or packaging only.
