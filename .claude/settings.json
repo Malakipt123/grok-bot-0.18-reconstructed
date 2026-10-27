@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "ask": [
+      "Bash(npx skills:*)",
+      "Bash(npx -y skills:*)",
+      "Bash(npx --yes skills:*)",
+      "Bash(pnpm dlx skills:*)",
+      "Bash(bunx skills:*)",
+      "Bash(npm install -g:*)",
+      "Bash(npm install --global:*)",
+      "Bash(npm i -g:*)",
+      "Bash(npm i --global:*)",
+      "Bash(pip install:*)",
+      "Bash(pipx install:*)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/session-start.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
