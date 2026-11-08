@@ -1,6 +1,6 @@
 # Testes manuais do Jarvis no Mac
 
-Checklist para validar o assistente de voz do PR #1 num Mac com Apple Silicon, Node 26.5 e chaves reais. Faz as secções pela ordem.
+Checklist para validar o assistente de voz, tal como está no `main`, num Mac com Apple Silicon, Node 26.5 e chaves reais. Faz as secções pela ordem.
 
 ## Como marcar
 
@@ -8,7 +8,7 @@ Checklist para validar o assistente de voz do PR #1 num Mac com Apple Silicon, N
 - Falha: deixa `- [ ]` e acrescenta por baixo uma linha `  - **Falha:** o que aconteceu`, com o erro do terminal se houver.
 - Saltado: deixa `- [ ]` e acrescenta `  - **Saltado:** porquê`.
 
-Quando terminares, faz commit e push deste ficheiro para o branch `ccr-ee33ddc5-umzzz4` e diz ao Claude «vê os testes».
+Quando terminares, faz commit e push deste ficheiro para o branch `testes-jarvis` (criado no passo 1) e diz ao Claude «vê os testes».
 
 Para os avisos não demorarem, arranca com `JARVIS_REMINDER_MINUTES=2` e cria um evento com Meet para daqui a 4 minutos.
 
@@ -16,19 +16,21 @@ Para os avisos não demorarem, arranca com `JARVIS_REMINDER_MINUTES=2` e cria um
 
 Instala as dependências e confirma que o repositório passa os testes no Mac.
 
-- [ ] **Obter o branch do PR**
+- [ ] **Obter o código mais recente**
   ```sh
   git fetch origin
-  git checkout ccr-ee33ddc5-umzzz4
+  git checkout main
+  git pull
+  git checkout -b testes-jarvis
   ```
-  Esperado: O branch fica ativo e `git status` diz que está atualizado com `origin/ccr-ee33ddc5-umzzz4`.
+  Esperado: Ficas no branch `testes-jarvis`, criado a partir do `main` atualizado. É nele que vais marcar os resultados.
 
 - [ ] **Instalar e correr os testes**
   ```sh
   npm ci
   npm run check
   ```
-  Esperado: Os typechecks e todos os testes passam, incluindo os 45 de voice-assistant.
+  Esperado: Os typechecks e todos os testes passam, incluindo os 57 de voice-assistant.
 
 - [ ] **Instalar o gravador de áudio**
   ```sh
