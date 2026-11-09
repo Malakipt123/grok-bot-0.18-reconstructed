@@ -24,8 +24,9 @@ microphone ──sox/ffmpeg──▶ ElevenLabs Scribe (speech-to-text)
 
 - **Local intent router** (`intent-router.ts`): obvious commands such as
   "abre o Spotify", "põe o volume a 40", "que horas são?", "toma nota …" or
-  "para!" run immediately, with no API call. If a local guess fails, the request
-  goes to Grok instead.
+  "para!", "silencia" or "volume no máximo" run immediately, with no API call,
+  even when you add "Jarvis, …" or "…, por favor". If a local guess fails, the
+  request goes to Grok instead.
 - **Grok** (`grok.ts`, `assistant.ts`): questions and open-ended requests go
   to xAI's OpenAI-compatible `/chat/completions` endpoint, with function tools
   for the same actions. The conversation history is capped and trimmed only at

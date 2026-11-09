@@ -59,6 +59,40 @@ test("intent router handles obvious commands locally and defers questions to Gro
   }
 });
 
+test("intent router ignores the wake word and politeness around a local command", async () => {
+  const { module, dispose } = await loadModule("intent-router.ts");
+  try {
+    assert.deepEqual(module.routeIntent("Abre o Spotify, por favor."), { kind: "action", action: "open_app", args: { name: "Spotify" } });
+    assert.deepEqual(module.routeIntent("Jarvis, abre o Spotify."), { kind: "action", action: "open_app", args: { name: "Spotify" } });
+    assert.deepEqual(module.routeIntent("Jarvis, que horas são?"), { kind: "action", action: "get_time", args: {} });
+    assert.deepEqual(module.routeIntent("Que horas são, Jarvis?"), { kind: "action", action: "get_time", args: {} });
+    assert.deepEqual(module.routeIntent("Põe o volume a 40, por favor."), { kind: "action", action: "set_volume", args: { level: 40 } });
+    assert.deepEqual(module.routeIntent("Ok Jarvis, para."), { kind: "stop" });
+    assert.deepEqual(module.routeIntent("Hey Jarvis, what time is it?"), { kind: "action", action: "get_time", args: {} });
+    assert.deepEqual(module.routeIntent("Please open Safari."), { kind: "action", action: "open_app", args: { name: "Safari" } });
+    assert.deepEqual(module.routeIntent("Jarvis, qual é a capital da Austrália?"), { kind: "llm" });
+    assert.deepEqual(module.routeIntent("Jarvis"), { kind: "llm" });
+  } finally {
+    await dispose();
+  }
+});
+
+test("intent router mutes and maxes the volume locally", async () => {
+  const { module, dispose } = await loadModule("intent-router.ts");
+  try {
+    const volume = level => ({ kind: "action", action: "set_volume", args: { level } });
+    assert.deepEqual(module.routeIntent("Silencia."), volume(0));
+    assert.deepEqual(module.routeIntent("tira o som"), volume(0));
+    assert.deepEqual(module.routeIntent("Mute"), volume(0));
+    assert.deepEqual(module.routeIntent("Volume no máximo."), volume(100));
+    assert.deepEqual(module.routeIntent("põe o volume no máximo"), volume(100));
+    assert.deepEqual(module.routeIntent("max volume"), volume(100));
+    assert.deepEqual(module.routeIntent("silencia as notificações do Slack"), { kind: "llm" });
+  } finally {
+    await dispose();
+  }
+});
+
 test("actions run argv-only commands and reject unsafe input", async () => {
   const { module, temporary, dispose } = await loadModule("actions.ts");
   try {
