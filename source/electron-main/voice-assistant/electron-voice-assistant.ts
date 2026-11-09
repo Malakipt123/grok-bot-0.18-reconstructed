@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 
 import { playerCommand } from "../../voice-assistant/audio.js";
-import { startDesktopVoiceAssistant, type DesktopVoiceAssistant, type DesktopVoiceDeps } from "../../voice-assistant/desktop-controller.js";
+import { startDesktopVoiceAssistant, type DesktopQuietPort, type DesktopVoiceAssistant, type DesktopVoiceDeps } from "../../voice-assistant/desktop-controller.js";
 import { JarvisHudWindow, type HudElectronPorts } from "./hud-window.js";
 import { JarvisTextWindow } from "./type-window.js";
 
@@ -70,7 +70,7 @@ export function createElectronVoiceAssistantDeps(bindings: ElectronVoiceAssistan
 }
 
 /** Starts the global Option+Space voice assistant in the background; never blocks app startup. */
-export function startElectronVoiceAssistant(bindings: ElectronVoiceAssistantBindings): { dispose(): void; openTextInput(): void } {
+export function startElectronVoiceAssistant(bindings: ElectronVoiceAssistantBindings): { dispose(): void; openTextInput(): void; quiet(): DesktopQuietPort | null } {
   let assistant: DesktopVoiceAssistant | null = null;
   let disposed = false;
   const log = bindings.log ?? ((message: string) => process.stdout.write(`[voice-assistant] ${message}\n`));
@@ -88,6 +88,9 @@ export function startElectronVoiceAssistant(bindings: ElectronVoiceAssistantBind
   return {
     openTextInput() {
       assistant?.openTextInput();
+    },
+    quiet() {
+      return assistant?.quiet ?? null;
     },
     dispose() {
       disposed = true;

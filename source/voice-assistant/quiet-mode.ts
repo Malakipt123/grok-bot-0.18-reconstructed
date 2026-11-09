@@ -1,10 +1,10 @@
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import type { AssistantToolkit } from "./calendar.js";
+import { zonedWallClockToDate, type AssistantToolkit } from "./calendar.js";
 import type { GrokTool } from "./grok.js";
 import { describeQuietHours, isQuietTime, type QuietHours } from "./quiet-hours.js";
-import { parseLocalTime } from "./voice-reminders.js";
+import { parseLocalTime, type Announcement } from "./voice-reminders.js";
 
 // "Modo silêncio até amanhã", "podes voltar a falar": a spoken override of the
 // quiet hours. While it lasts, email and calendar alerts are silent (or, when
@@ -47,6 +47,39 @@ export const QUIET_MODE_TOOLS: readonly GrokTool[] = [
     },
   },
 ];
+
+/**
+ * What Jarvis says when silent mode ends, about the alerts it kept quiet:
+ * "Enquanto estiveste em silêncio chegaram 2 emails importantes, de Ana e
+ * Banco, e houve 1 aviso de um evento: Reunião." Null when nothing was held.
+ */
+export function heldAlertsSummary(held: readonly Announcement[], language: string): string | null {
+  if (held.length === 0) return null;
+  const portuguese = language.toLowerCase().startsWith("pt");
+  const emailAlerts = held.filter((announcement) => announcement.source === "email");
+  const events = held.filter((announcement) => announcement.source === "calendar" && announcement.event);
+  const senders = [...new Set(emailAlerts.flatMap((announcement) => announcement.senders ?? []))];
+  const emails = emailAlerts.reduce((total, announcement) => total + (announcement.count ?? 1), 0);
+  const names = (list: readonly string[]) => {
+    const shown = list.slice(0, 3);
+    const others = list.length - shown.length;
+    return `${shown.join(", ")}${others > 0 ? (portuguese ? ` e mais ${others}` : ` and ${others} more`) : ""}`;
+  };
+  const parts: string[] = [];
+  if (emails > 0) {
+    parts.push(portuguese
+      ? `${emails === 1 ? "chegou 1 email importante" : `chegaram ${emails} emails importantes`}${senders.length ? `, de ${names(senders)}` : ""}`
+      : `${emails === 1 ? "1 important email arrived" : `${emails} important emails arrived`}${senders.length ? `, from ${names(senders)}` : ""}`);
+  }
+  if (events.length > 0) {
+    const titles = [...new Set(events.map((announcement) => announcement.event!.summary))];
+    parts.push(portuguese
+      ? `${events.length === 1 ? "houve 1 aviso de um evento" : `houve ${events.length} avisos de eventos`}: ${names(titles)}`
+      : `${events.length === 1 ? "there was 1 event reminder" : `there were ${events.length} event reminders`}: ${names(titles)}`);
+  }
+  if (parts.length === 0) return null;
+  return portuguese ? `Enquanto estiveste em silêncio ${parts.join(", e ")}.` : `While you were in silent mode, ${parts.join(", and ")}.`;
+}
 
 export class QuietMode {
   readonly #hours: QuietHours | null;
@@ -92,6 +125,35 @@ export class QuietMode {
   async reset(): Promise<void> {
     await this.#save(null);
     this.#override = null;
+  }
+
+  /** When the quiet hours next end (tomorrow morning), or 08:00 if there are none. */
+  nextMorning(now = this.#now()): Date {
+    const end = this.#hours?.end ?? 8 * 60;
+    const clock = `${String(Math.floor(end / 60)).padStart(2, "0")}:${String(end % 60).padStart(2, "0")}:00`;
+    const today = new Intl.DateTimeFormat("en-CA", { timeZone: this.#timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(now));
+    let candidate = zonedWallClockToDate(`${today}T${clock}`, this.#timeZone);
+    for (let day = 1; candidate.getTime() <= now && day <= 2; day += 1) {
+      const next = new Intl.DateTimeFormat("en-CA", { timeZone: this.#timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(now + day * 24 * 3_600_000));
+      candidate = zonedWallClockToDate(`${next}T${clock}`, this.#timeZone);
+    }
+    return candidate;
+  }
+
+  /** A short status for menus: "🔕 Silêncio até 15:00", "🔔 Avisos com voz". */
+  label(now = this.#now()): string {
+    const portuguese = this.#language.toLowerCase().startsWith("pt");
+    const override = this.#activeOverride(now);
+    const quiet = this.isQuiet(now);
+    const clock = (epoch: number) => new Date(epoch).toLocaleTimeString(this.#language, { hour: "2-digit", minute: "2-digit", timeZone: this.#timeZone });
+    if (override) {
+      return portuguese
+        ? `${quiet ? "🔕 Silêncio" : "🔔 Avisos com voz"} até ${clock(override.until)}`
+        : `${quiet ? "🔕 Silent" : "🔔 Alerts spoken"} until ${clock(override.until)}`;
+    }
+    return portuguese
+      ? (quiet ? "🔕 Silêncio (horário habitual)" : "🔔 Avisos com voz")
+      : (quiet ? "🔕 Silent (usual hours)" : "🔔 Alerts spoken");
   }
 
   describe(now = this.#now()): string {

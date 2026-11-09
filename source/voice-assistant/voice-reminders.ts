@@ -39,6 +39,11 @@ export interface Announcement {
   readonly reminder?: VoiceReminder;
   /** Came during quiet hours: show it as a silent notification instead of speaking. */
   readonly quiet?: boolean;
+  /** Which proactive alert this is, for the summary when silent mode ends. */
+  readonly source?: "email" | "calendar";
+  /** Email alerts: who wrote, as spoken, and how many messages. */
+  readonly senders?: readonly string[];
+  readonly count?: number;
 }
 
 interface ReminderFile {

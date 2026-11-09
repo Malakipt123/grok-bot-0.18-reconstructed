@@ -102,6 +102,8 @@ npm run jarvis
   **^**) e uma notificação «Ready. Press Control+Alt+Space to talk, Control+Alt+J to type.».
 - **Ctrl+Alt+Espaço** começa a ouvir (som *Speech On*). Carrega outra vez
   para enviar (som *Speech Off*). Carregar enquanto ele fala interrompe-o.
+- No menu do ícone, **Modo silêncio** cala os avisos durante 1 hora ou até
+  amanhã de manhã; quando o silêncio acaba, o Jarvis resume o que chegou.
 - **Ctrl+Alt+J** abre uma janela para escreveres ao Jarvis em vez de falar; a
   resposta aparece por escrito, sem som.
 - No menu do ícone: **Chaves…**, **Iniciar com o sistema** (o Jarvis arranca sozinho quando

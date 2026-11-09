@@ -31,6 +31,17 @@ export function defaultTypeShortcut(platform: NodeJS.Platform = process.platform
  */
 export type DesktopAsk = (text: string, onText: (delta: string) => void) => Promise<string | null>;
 
+/** Silent mode as a menu sees it: a status line and three actions. */
+export interface DesktopQuietPort {
+  label(): string;
+  /** Silent (or, with quiet false, spoken) until `until`. */
+  set(quiet: boolean, until: Date): Promise<void>;
+  /** Back to the usual quiet hours. */
+  reset(): Promise<void>;
+  /** When the usual quiet hours next end: "until tomorrow morning". */
+  nextMorning(): Date;
+}
+
 /** Says a reply out loud on request (the 🔊 button), queued like any announcement. */
 export type DesktopSpeak = (text: string) => void;
 
@@ -87,7 +98,7 @@ export interface DesktopVoiceDeps {
   readonly hud?: DesktopVoiceHudPort;
   /** When present, JARVIS_TYPE_SHORTCUT (default Ctrl+Alt+J) opens it. */
   readonly textInput?: DesktopTextInputPort;
-  readonly createRuntime?: (config: VoiceAssistantConfig) => Promise<Pick<VoiceAssistantRuntime, "assistant" | "voice" | "profile" | "runRoutine"> & Partial<Pick<VoiceAssistantRuntime, "startReminders">>>;
+  readonly createRuntime?: (config: VoiceAssistantConfig) => Promise<Pick<VoiceAssistantRuntime, "assistant" | "voice" | "profile" | "runRoutine"> & Partial<Pick<VoiceAssistantRuntime, "startReminders" | "quietMode">>>;
   readonly startRecording?: (options: RecordingOptions) => Promise<Recording>;
   readonly player?: { play(wav: Uint8Array, onStart?: () => void): Promise<void>; stop(): void };
   readonly maxRecordingMs?: number;
@@ -101,6 +112,8 @@ export interface DesktopVoiceAssistant {
   toggle(): Promise<void>;
   /** A typed question: answered in text only, never spoken. */
   ask: DesktopAsk;
+  /** Silent mode, for menus; null when the runtime has none. */
+  readonly quiet: DesktopQuietPort | null;
   /** Speaks text that was only shown, e.g. a typed reply the user wants to hear after all. */
   speak: DesktopSpeak;
   openTextInput(): void;
@@ -425,6 +438,14 @@ export async function startDesktopVoiceAssistant(deps: DesktopVoiceDeps): Promis
     },
     ask,
     speak,
+    quiet: runtime.quietMode
+      ? {
+        label: () => runtime.quietMode!.label(),
+        set: async (quiet, until) => void (await runtime.quietMode!.set(quiet, until)),
+        reset: () => runtime.quietMode!.reset(),
+        nextMorning: () => runtime.quietMode!.nextMorning(),
+      }
+      : null,
     openTextInput() {
       if (!disposed) deps.textInput?.open(ask, speak);
     },

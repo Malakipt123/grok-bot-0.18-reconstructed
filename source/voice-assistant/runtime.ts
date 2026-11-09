@@ -8,7 +8,7 @@ import { ElevenLabsClient } from "./elevenlabs.js";
 import { GrokClient } from "./grok.js";
 import { createCalendarToolkit, createMeetingJoiner, GoogleCalendarClient, isMeetingUrl } from "./calendar.js";
 import { EMAIL_ALERTS_FILENAME, EmailAlerts } from "./email-alerts.js";
-import { QUIET_MODE_FILENAME, QuietMode } from "./quiet-mode.js";
+import { heldAlertsSummary, QUIET_MODE_FILENAME, QuietMode } from "./quiet-mode.js";
 import { createGmailToolkit, GmailClient } from "./gmail.js";
 import { GMAIL_READONLY_SCOPE, GOOGLE_TOKEN_FILENAME, GoogleOAuth } from "./google-auth.js";
 import { MEMORY_FILENAME, MemoryStore } from "./memory.js";
@@ -55,6 +55,8 @@ export async function createVoiceAssistantRuntime(
     /** Short status messages for the user (e.g. "Google Calendar connected"). */
     readonly onNotice?: (message: string) => void;
     readonly fetch?: typeof fetch;
+    /** How often to check whether silent mode ended (default one minute). */
+    readonly summaryCheckMs?: number;
   } = {},
 ): Promise<VoiceAssistantRuntime> {
   const profileDirectory = path.dirname(config.profilePath);
@@ -124,8 +126,13 @@ export async function createVoiceAssistantRuntime(
     language: config.language,
     filePath: path.join(profileDirectory, QUIET_MODE_FILENAME),
   });
-  const proactive = (announcement: Announcement): Announcement =>
-    quietMode.isQuiet() ? { ...announcement, quiet: true } : announcement;
+  // Alerts kept silent are summed up out loud once silent mode ends.
+  let held: Announcement[] = [];
+  const proactive = (announcement: Announcement): Announcement => {
+    if (!quietMode.isQuiet()) return announcement;
+    held = [...held, announcement].slice(-50);
+    return { ...announcement, quiet: true };
+  };
   const emails = google && gmail && config.emailAlerts
     ? new EmailAlerts({
       search: (query) => gmail.search(query),
@@ -222,7 +229,7 @@ export async function createVoiceAssistantRuntime(
           leadMinutes: config.reminderMinutes,
           language: config.language,
           announce: (reminder) => {
-            const announcement: Announcement = { text: reminder.text, title: `Jarvis · ${reminder.event.summary}`, expiresAt: Date.parse(reminder.event.start), event: reminder.event };
+            const announcement: Announcement = { text: reminder.text, title: `Jarvis · ${reminder.event.summary}`, expiresAt: Date.parse(reminder.event.start), event: reminder.event, source: "calendar" };
             voiceReminders.noteAnnounced(announcement);
             announceHandler(proactive(announcement));
           },
@@ -231,8 +238,16 @@ export async function createVoiceAssistantRuntime(
         : null;
       events?.start();
       void emails?.start();
+      const summary = setInterval(() => {
+        if (held.length === 0 || quietMode.isQuiet()) return;
+        const text = heldAlertsSummary(held, config.language);
+        held = [];
+        if (text) announceHandler({ text, title: "Jarvis", expiresAt: Date.now() + 2 * 3_600_000 });
+      }, options.summaryCheckMs ?? 60_000);
+      summary.unref();
       return {
         stop: () => {
+          clearInterval(summary);
           events?.stop();
           emails?.stop();
           voiceReminders.stop();

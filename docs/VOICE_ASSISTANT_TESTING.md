@@ -277,6 +277,10 @@ Ativa a Gmail API no mesmo projeto do Google Cloud.
   Diz «modo silêncio até daqui a uma hora» e espera por um aviso de email ou de evento. Depois diz «podes voltar a avisar».
   Esperado: Confirma até quando. O aviso aparece só como notificação; depois de «podes voltar a avisar» os avisos voltam a ser ditos, mesmo à noite.
 
+- [ ] **Silêncio no menu e resumo**
+  No menu do ícone, escolhe Modo silêncio → Silêncio durante 1 hora e espera por um email importante. Depois escolhe Horário habitual.
+  Esperado: O menu mostra «🔕 Silêncio até …». O email só aparece como notificação; até um minuto depois de voltares ao normal, o Jarvis diz «Enquanto estiveste em silêncio chegou 1 email importante, de …».
+
 - [ ] **Horas de silêncio**
   Arranca com JARVIS_QUIET_HOURS definido para a hora atual (por exemplo 14:00-15:00) e espera por um aviso de email ou de evento.
   Esperado: Aparece só uma notificação, sem voz. Um lembrete que tu marcaste para essa hora continua a ser dito.

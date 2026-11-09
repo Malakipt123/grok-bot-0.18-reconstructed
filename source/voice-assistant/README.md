@@ -108,6 +108,16 @@ when no time is given, at most a week). Grok uses `quiet_mode_set` and
 `quiet_mode_reset`. The override is kept in `quiet-mode.json` and survives a
 restart; when it ends, the usual hours apply again.
 
+**From the tray** (standalone app and Windows installer): **🔕/🔔 Modo
+silêncio** shows the current state and offers *silent for 1 hour*, *silent
+until tomorrow morning*, *speak alerts until tomorrow morning* and *usual
+hours*.
+
+**When silence ends**, Jarvis sums up what it kept quiet, once: "Enquanto
+estiveste em silêncio chegaram 3 emails importantes, de Ana e Banco, e houve 1
+aviso de um evento: Reunião." The alerts themselves were already shown as
+notifications; ask "tenho emails importantes?" for the details.
+
 ## Voice reminders and snooze
 
 These work without Google Calendar.
