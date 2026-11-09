@@ -209,6 +209,9 @@ export class EmailAlerts {
         text: emailAlertText(fresh, this.#options.language),
         title: "Jarvis · Gmail",
         expiresAt: this.#now() + SPEAK_WITHIN_MS,
+        source: "email",
+        count: fresh.length,
+        senders: [...new Set(fresh.map((message) => speakable(senderName(message.from), 40)))],
       });
     } catch (error) {
       // One notice per outage, not one every five minutes.

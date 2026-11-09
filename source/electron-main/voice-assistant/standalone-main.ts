@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { VOICE_SECRET_KEYS } from "../../voice-assistant/desktop-controller.js";
+import type { DesktopQuietPort } from "../../voice-assistant/desktop-controller.js";
 import { startElectronVoiceAssistant } from "./electron-voice-assistant.js";
 import type { HudElectronPorts } from "./hud-window.js";
 import { ringIcon } from "./ring-icon.js";
@@ -20,6 +21,7 @@ interface TrayMenuItem {
   readonly enabled?: boolean;
   readonly checked?: boolean;
   readonly click?: () => void;
+  readonly submenu?: TrayMenuItem[];
 }
 
 interface SetupWindow {
@@ -103,7 +105,7 @@ if (!app.requestSingleInstanceLock()) {
     const keys = new KeyStore(path.join(app.getPath("userData"), KEY_STORE_FILENAME), electron.safeStorage);
     const tray = new electron.Tray(electron.nativeImage.createFromBitmap(ringIcon(), { width: 32, height: 32, scaleFactor: 2 }));
     let status = portuguese ? "A iniciar…" : "Starting…";
-    let assistant: { dispose(): void; openTextInput(): void } | null = null;
+    let assistant: { dispose(): void; openTextInput(): void; quiet(): DesktopQuietPort | null } | null = null;
     let setupWindow: SetupWindow | null = null;
     const profileDirectory = path.dirname(process.env.JARVIS_PROFILE || path.join(os.homedir(), ".grok-bot", "voice-assistant", "ASSISTANT.md"));
 
@@ -176,12 +178,29 @@ if (!app.requestSingleInstanceLock()) {
       window.show();
     };
 
+    // "Modo silêncio" in the tray: the same override as saying it to Jarvis.
+    const quietMenu = (): TrayMenuItem[] => {
+      const quiet = assistant?.quiet() ?? null;
+      if (!quiet) return [];
+      const apply = (change: () => Promise<void>) => () => void change().then(refreshMenu, (error: unknown) => notify(error instanceof Error ? error.message : String(error)));
+      return [{
+        label: quiet.label(),
+        submenu: [
+          { label: portuguese ? "Silêncio durante 1 hora" : "Silent for 1 hour", click: apply(() => quiet.set(true, new Date(Date.now() + 3_600_000))) },
+          { label: portuguese ? "Silêncio até amanhã de manhã" : "Silent until tomorrow morning", click: apply(() => quiet.set(true, quiet.nextMorning())) },
+          { label: portuguese ? "Avisos com voz até amanhã de manhã" : "Speak alerts until tomorrow morning", click: apply(() => quiet.set(false, quiet.nextMorning())) },
+          { type: "separator" },
+          { label: portuguese ? "Horário habitual" : "Usual hours", click: apply(() => quiet.reset()) },
+        ],
+      }];
+    };
     const refreshMenu = () => {
       tray.setToolTip(`Jarvis · ${status}`);
       tray.setContextMenu(electron.Menu.buildFromTemplate([
         { label: status, enabled: false },
         { type: "separator" },
         { label: portuguese ? "Escrever ao Jarvis…" : "Type to Jarvis…", enabled: assistant !== null, click: () => assistant?.openTextInput() },
+        ...quietMenu(),
         { label: portuguese ? "Chaves…" : "Keys…", click: () => void openSetup() },
         {
           label: portuguese ? "Iniciar com o sistema" : "Start at login",
@@ -198,6 +217,8 @@ if (!app.requestSingleInstanceLock()) {
       ]));
     };
     refreshMenu();
+    // The silent-mode label changes on its own when an override or the quiet hours end.
+    setInterval(refreshMenu, 60_000).unref();
     // Opening Jarvis again (e.g. from the Start menu) while it runs shows the keys window.
     app.on("second-instance", () => void openSetup());
 

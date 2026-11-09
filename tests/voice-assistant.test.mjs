@@ -2132,6 +2132,7 @@ test("typed questions are answered as text only, never spoken, and have their ow
     harness.shortcuts.get("Control+Alt+J")();
     assert.equal(opened.ask, assistant.ask, "the shortcut opens the typing window");
     assert.equal(opened.speak, assistant.speak);
+    assert.equal(assistant.quiet, null, "no silent-mode menu without a runtime that has one");
 
     const deltas = [];
     assert.equal(await assistant.ask("explica", (delta) => deltas.push(delta)), "Claro, aqui está.");
@@ -2224,6 +2225,36 @@ test("silent mode by voice overrides the quiet hours for a while and survives a 
     const noHours = await module.QuietMode.open({ hours: null, timeZone: "UTC", filePath: path.join(temporary, "q2.json"), language: "en", now: () => now });
     assert.equal(noHours.isQuiet(), false);
     assert.match(noHours.describe(), /no usual quiet hours/);
+  } finally {
+    await dispose();
+  }
+});
+
+test("silent mode: a summary of what was held, the next morning, and a menu label", async () => {
+  const { module, temporary, dispose } = await loadModule("quiet-mode.ts");
+  try {
+    const email = (senders, count) => ({ text: "x", title: "Jarvis · Gmail", expiresAt: 0, source: "email", senders, count });
+    const event = (summary) => ({ text: "x", title: "x", expiresAt: 0, source: "calendar", event: { id: summary, summary, start: "", end: "", allDay: false, location: null } });
+    assert.equal(module.heldAlertsSummary([], "pt"), null);
+    assert.equal(module.heldAlertsSummary([email(["Ana"], 1)], "pt"), "Enquanto estiveste em silêncio chegou 1 email importante, de Ana.");
+    assert.equal(module.heldAlertsSummary([email(["Ana", "Banco"], 3), email(["Ana"], 1), event("Reunião"), event("Dentista"), event("Reunião")], "pt"),
+      "Enquanto estiveste em silêncio chegaram 4 emails importantes, de Ana, Banco, e houve 3 avisos de eventos: Reunião, Dentista.");
+    assert.equal(module.heldAlertsSummary([email(["A", "B", "C", "D", "E"], 5)], "en"), "While you were in silent mode, 5 important emails arrived, from A, B, C and 2 more.");
+
+    let now = Date.parse("2026-11-09T15:00:00Z");
+    const quiet = await module.QuietMode.open({ hours: { start: 22 * 60, end: 8 * 60 }, timeZone: "Europe/Lisbon", filePath: path.join(temporary, "q.json"), language: "pt", now: () => now });
+    assert.equal(quiet.nextMorning().toISOString(), "2026-11-10T08:00:00.000Z", "after 08:00, tomorrow");
+    now = Date.parse("2026-11-10T03:00:00Z");
+    assert.equal(quiet.nextMorning().toISOString(), "2026-11-10T08:00:00.000Z", "before 08:00, today");
+    now = Date.parse("2026-07-01T12:00:00Z");
+    assert.equal(quiet.nextMorning().toISOString(), "2026-07-02T07:00:00.000Z", "summer time: 08:00 in Lisbon is 07:00 UTC");
+
+    now = Date.parse("2026-11-09T15:00:00Z");
+    assert.equal(quiet.label(), "🔔 Avisos com voz");
+    await quiet.set(true, new Date(now + 3_600_000));
+    assert.equal(quiet.label(), "🔕 Silêncio até 16:00");
+    now = Date.parse("2026-11-09T23:00:00Z");
+    assert.equal(quiet.label(), "🔕 Silêncio (horário habitual)");
   } finally {
     await dispose();
   }
