@@ -103,7 +103,7 @@ if (!app.requestSingleInstanceLock()) {
     const keys = new KeyStore(path.join(app.getPath("userData"), KEY_STORE_FILENAME), electron.safeStorage);
     const tray = new electron.Tray(electron.nativeImage.createFromBitmap(ringIcon(), { width: 32, height: 32, scaleFactor: 2 }));
     let status = portuguese ? "A iniciar…" : "Starting…";
-    let assistant: { dispose(): void } | null = null;
+    let assistant: { dispose(): void; openTextInput(): void } | null = null;
     let setupWindow: SetupWindow | null = null;
     const profileDirectory = path.dirname(process.env.JARVIS_PROFILE || path.join(os.homedir(), ".grok-bot", "voice-assistant", "ASSISTANT.md"));
 
@@ -181,6 +181,7 @@ if (!app.requestSingleInstanceLock()) {
       tray.setContextMenu(electron.Menu.buildFromTemplate([
         { label: status, enabled: false },
         { type: "separator" },
+        { label: portuguese ? "Escrever ao Jarvis…" : "Type to Jarvis…", enabled: assistant !== null, click: () => assistant?.openTextInput() },
         { label: portuguese ? "Chaves…" : "Keys…", click: () => void openSetup() },
         {
           label: portuguese ? "Iniciar com o sistema" : "Start at login",
