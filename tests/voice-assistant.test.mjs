@@ -1447,6 +1447,13 @@ test("desktop announcements speak when idle, wait during a conversation, never o
     assert.deepEqual(spoken.slice(2), ["Olá a ti.", "Daqui a 5 minutos tens Gama."]);
     assert.ok(harness.events.some((event) => event[0] === "notify" && event[1] === "Já devia ter sido dito."), "an expired reminder becomes a notification");
     assert.equal(overlap, false);
+
+    // During quiet hours a proactive alert is a silent notification, never speech.
+    const before = spoken.length;
+    announceReminder({ ...reminder("q", "Novo email importante de Ana: Contrato.", 600_000), quiet: true });
+    await sleep(80);
+    assert.equal(spoken.length, before);
+    assert.ok(harness.events.some((event) => event[0] === "notify" && event[1] === "Novo email importante de Ana: Contrato."));
     assistant.dispose();
   } finally {
     await dispose();
@@ -2016,6 +2023,77 @@ test("email alerts speak only new important mail, sender and subject, once, and 
     await restarted.poll();
     await restarted.poll();
     assert.deepEqual(errors, ["Gmail 503"], "one notice per outage");
+    restarted.stop();
+  } finally {
+    await dispose();
+  }
+});
+
+test("quiet hours: parsing, ranges across midnight, the user's time zone", async () => {
+  const { module, dispose } = await loadModule("quiet-hours.ts");
+  try {
+    assert.deepEqual(module.parseQuietHours(undefined), { start: 22 * 60, end: 8 * 60 }, "on by default, 22:00–08:00");
+    assert.deepEqual(module.parseQuietHours("23-7"), { start: 23 * 60, end: 7 * 60 });
+    assert.deepEqual(module.parseQuietHours(" 13:30 – 15:00 "), { start: 13 * 60 + 30, end: 15 * 60 });
+    assert.equal(module.parseQuietHours("off"), null);
+    assert.equal(module.parseQuietHours("às dez"), null);
+    assert.equal(module.parseQuietHours("25:00-08:00"), null);
+    assert.equal(module.parseQuietHours("08:00-08:00"), null);
+    const night = module.parseQuietHours("22:00-08:00");
+    const lisbon = (iso) => module.isQuietTime(night, new Date(iso), "Europe/Lisbon");
+    assert.equal(lisbon("2026-11-09T21:59:00Z"), false);
+    assert.equal(lisbon("2026-11-09T22:00:00Z"), true);
+    assert.equal(lisbon("2026-11-10T03:00:00Z"), true);
+    assert.equal(lisbon("2026-11-10T08:00:00Z"), false);
+    // Summer time: 21:30 UTC is 22:30 in Lisbon.
+    assert.equal(lisbon("2026-07-01T21:30:00Z"), true);
+    assert.equal(module.isQuietTime(module.parseQuietHours("13:00-14:00"), new Date("2026-11-09T13:30:00Z"), "UTC"), true);
+    assert.equal(module.isQuietTime(null, new Date(), "UTC"), false);
+    assert.equal(module.describeQuietHours(night), "22:00–08:00");
+  } finally {
+    await dispose();
+  }
+});
+
+test("always-announce senders: validated, persisted, and added to the alert query", async () => {
+  const { module, temporary, dispose } = await loadModule("email-alerts.ts");
+  try {
+    assert.equal(module.emailAlertsQuery([]), module.EMAIL_ALERTS_QUERY);
+    assert.equal(module.emailAlertsQuery(["Ana Silva", "banco@exemplo.pt"]),
+      'is:unread newer_than:1d {from:"Ana Silva" from:banco@exemplo.pt (is:important -category:promotions -category:social)}');
+    let allowed = false;
+    const queries = [];
+    const file = path.join(temporary, "email-alerts.json");
+    const make = () => new module.EmailAlerts({
+      search: async (query) => { queries.push(query); return []; },
+      isAllowed: async () => allowed,
+      announce: () => {},
+      language: "pt",
+      filePath: file,
+      pollMs: 3_600_000,
+    });
+    const alerts = make();
+    const toolkit = alerts.toolkit();
+    assert.deepEqual(await toolkit.tools(), [], "no list tools without Gmail access");
+    allowed = true;
+    assert.deepEqual((await toolkit.tools()).map((tool) => tool.function.name), ["email_vip_add", "email_vip_list", "email_vip_remove"]);
+    assert.match(await toolkit.run("email_vip_add", { sender: " Ana  Silva " }), /^Added: Ana Silva\./);
+    await toolkit.run("email_vip_add", { sender: "<banco@exemplo.pt>" });
+    await toolkit.run("email_vip_add", { sender: "ana silva" });
+    assert.equal(await toolkit.run("email_vip_list", {}), "Ana Silva, banco@exemplo.pt", "no duplicates, case ignored");
+    await assert.rejects(toolkit.run("email_vip_add", { sender: "x OR from:*" }), /Not a sender/);
+    await assert.rejects(toolkit.run("email_vip_add", { sender: '"} is:read' }), /Not a sender/);
+    assert.equal((await stat(file)).mode & 0o777, 0o600);
+
+    // Adding someone before any poll does not count as having seen the mail already waiting.
+    assert.equal(JSON.parse(await readFile(file, "utf8")).primed, false);
+    const restarted = make();
+    await restarted.start();
+    await restarted.poll();
+    assert.equal(queries.at(-1), module.emailAlertsQuery(["Ana Silva", "banco@exemplo.pt"]));
+    assert.equal(await restarted.toolkit().run("email_vip_remove", { sender: "ANA SILVA" }), "Removed: Ana Silva.");
+    assert.equal(await restarted.toolkit().run("email_vip_remove", { sender: "Rui" }), "That sender is not on the list.");
+    assert.deepEqual(await restarted.vips(), ["banco@exemplo.pt"]);
     restarted.stop();
   } finally {
     await dispose();

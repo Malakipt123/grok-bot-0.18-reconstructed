@@ -400,6 +400,7 @@ export async function startDesktopVoiceAssistant(deps: DesktopVoiceDeps): Promis
   scheduler.start();
 
   const reminders = runtime.startReminders?.((reminder) => {
+    if (reminder.quiet) return deps.notify(reminder.title, stripAudioTags(reminder.text));
     void announce(reminder.text, reminder.title, reminder.expiresAt).catch((error: unknown) => deps.reportFailure("reminder", error));
   }) ?? { stop() {} };
 

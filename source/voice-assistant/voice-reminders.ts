@@ -37,6 +37,8 @@ export interface Announcement {
   readonly expiresAt: number;
   readonly event?: CalendarEvent;
   readonly reminder?: VoiceReminder;
+  /** Came during quiet hours: show it as a silent notification instead of speaking. */
+  readonly quiet?: boolean;
 }
 
 interface ReminderFile {
