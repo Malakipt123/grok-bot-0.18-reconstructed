@@ -116,6 +116,7 @@ export class EmailAlerts {
   #seen: string[] = [];
   #vips: string[] = [];
   #loaded: Promise<void> | null = null;
+  #saving: Promise<void> = Promise.resolve();
   #primed = false;
   #poller: NodeJS.Timeout | null = null;
   #stopped = false;
@@ -216,14 +217,21 @@ export class EmailAlerts {
     }
   }
 
-  async #save(): Promise<void> {
-    const { filePath } = this.#options;
-    await mkdir(path.dirname(filePath), { recursive: true });
-    const temporary = `${filePath}.${process.pid}.tmp`;
-    const data: AlertsFile = { schemaVersion: 1, seen: this.#seen, vips: this.#vips, primed: this.#primed };
-    await writeFile(temporary, `${JSON.stringify(data)}\n`, { mode: 0o600 });
-    await chmod(temporary, 0o600);
-    await rename(temporary, filePath);
+  // A poll and a list change can save at the same time; writes go one after another
+  // so they never race on the temporary file.
+  #save(): Promise<void> {
+    const write = async () => {
+      const { filePath } = this.#options;
+      await mkdir(path.dirname(filePath), { recursive: true });
+      const temporary = `${filePath}.${process.pid}.tmp`;
+      const data: AlertsFile = { schemaVersion: 1, seen: this.#seen, vips: this.#vips, primed: this.#primed };
+      await writeFile(temporary, `${JSON.stringify(data)}\n`, { mode: 0o600 });
+      await chmod(temporary, 0o600);
+      await rename(temporary, filePath);
+    };
+    const saved = this.#saving.then(write, write);
+    this.#saving = saved.catch(() => undefined);
+    return saved;
   }
 
   #load(): Promise<void> {
