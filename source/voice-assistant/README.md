@@ -81,6 +81,15 @@ The choice is saved in `voice.json` (0600) next to `ASSISTANT.md` and wins
 over `ELEVENLABS_VOICE_ID` on restart; "volta à voz normal" removes it. Only
 voices that really exist in the account can be chosen.
 
+## Quiet hours
+
+From 22:00 to 08:00 (your time zone) Jarvis does not start talking about new
+email or calendar events: they appear as silent notifications instead.
+Reminders you set yourself ("lembra-me às 23h de…") and routines from
+`ASSISTANT.md` still speak, and Jarvis answers whenever you talk to it.
+`JARVIS_QUIET_HOURS=23:00-07:00` changes the hours, and
+`JARVIS_QUIET_HOURS=off` turns them off.
+
 ## Voice reminders and snooze
 
 These work without Google Calendar.
@@ -209,6 +218,12 @@ banco esta semana?". The daily brief mentions important unread email too.
   not announced. Ids already announced are kept in `email-alerts.json`
   (0600). Gmail learns what is important to you; mark a message as
   important, or not, to teach it. `JARVIS_EMAIL_ALERTS=off` turns alerts off.
+- **Always-announce list.** "Avisa-me sempre dos emails da Ana" adds Ana to
+  a list whose unread email is announced even when Gmail does not mark it
+  important (promotions included, so a bank's statement counts). Grok uses
+  `email_vip_add`, `email_vip_list` and `email_vip_remove`; a name or an
+  address works, as Gmail's `from:` reads it. The list lives in
+  `email-alerts.json`.
 - **Already connected before Gmail support?** Your consent only covers
   Calendar. Say **"liga o Google"** (or run `/google connect`) once more and
   tick Gmail; `/google status` shows whether Gmail is allowed. Google's
@@ -330,6 +345,7 @@ Pass `--mute` for text-only replies.
 | `JARVIS_TIMEZONE` | system time zone |
 | `JARVIS_REMINDER_MINUTES` | `10` (`off` disables event reminders) |
 | `JARVIS_EMAIL_ALERTS` | on (`off` stops spoken alerts for new important email) |
+| `JARVIS_QUIET_HOURS` | `22:00-08:00` (email and calendar alerts stay silent then; `off`) |
 
 ## ASSISTANT.md
 

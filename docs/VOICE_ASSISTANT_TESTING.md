@@ -265,6 +265,14 @@ Ativa a Gmail API no mesmo projeto do Google Cloud.
   Com o Jarvis a correr, pede a alguém que te envie um email e marca-o como importante no Gmail (ou espera por um que o Gmail marque sozinho).
   Esperado: Em até 5 minutos diz «Novo email importante de …: …» só com o remetente e o assunto. Não repete o mesmo email, nem depois de reiniciar.
 
+- [ ] **Lista de pessoas**
+  Diz «avisa-me sempre dos emails da …» com alguém cujo email o Gmail não marca como importante, e pede-lhe que te escreva.
+  Esperado: O Jarvis confirma e, em até 5 minutos, anuncia esse email. «De quem me avisas sempre?» lista as pessoas.
+
+- [ ] **Horas de silêncio**
+  Arranca com JARVIS_QUIET_HOURS definido para a hora atual (por exemplo 14:00-15:00) e espera por um aviso de email ou de evento.
+  Esperado: Aparece só uma notificação, sem voz. Um lembrete que tu marcaste para essa hora continua a ser dito.
+
 - [ ] **Sem acesso ao Gmail**
   Liga outra vez a conta Google mas tira o visto do Gmail e pergunta pelos emails.
   Esperado: Diz que não tem acesso ao Gmail e que deves dizer «liga o Google». O calendário continua a funcionar.
