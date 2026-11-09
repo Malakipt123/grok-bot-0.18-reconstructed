@@ -4,6 +4,7 @@ import path from "node:path";
 import { playerCommand } from "../../voice-assistant/audio.js";
 import { startDesktopVoiceAssistant, type DesktopVoiceAssistant, type DesktopVoiceDeps } from "../../voice-assistant/desktop-controller.js";
 import { JarvisHudWindow, type HudElectronPorts } from "./hud-window.js";
+import { JarvisTextWindow } from "./type-window.js";
 
 interface ElectronVoiceRuntime extends HudElectronPorts {
   readonly globalShortcut: { register(accelerator: string, callback: () => void): boolean; unregister(accelerator: string): void };
@@ -41,6 +42,7 @@ export function createElectronVoiceAssistantDeps(bindings: ElectronVoiceAssistan
   const hud = bindings.env.JARVIS_HUD?.trim().toLowerCase() === "off" ? undefined : new JarvisHudWindow(electron, bindings.env.JARVIS_LANGUAGE || "pt");
   return {
     ...(hud ? { hud } : {}),
+    textInput: new JarvisTextWindow(electron, bindings.env.JARVIS_LANGUAGE || "pt"),
     env: bindings.env,
     platform: bindings.platform,
     readSecret: bindings.readSecret,
@@ -68,7 +70,7 @@ export function createElectronVoiceAssistantDeps(bindings: ElectronVoiceAssistan
 }
 
 /** Starts the global Option+Space voice assistant in the background; never blocks app startup. */
-export function startElectronVoiceAssistant(bindings: ElectronVoiceAssistantBindings): { dispose(): void } {
+export function startElectronVoiceAssistant(bindings: ElectronVoiceAssistantBindings): { dispose(): void; openTextInput(): void } {
   let assistant: DesktopVoiceAssistant | null = null;
   let disposed = false;
   const log = bindings.log ?? ((message: string) => process.stdout.write(`[voice-assistant] ${message}\n`));
@@ -78,12 +80,15 @@ export function startElectronVoiceAssistant(bindings: ElectronVoiceAssistantBind
       if (result.status !== "started") return log(result.detail);
       if (disposed) return result.assistant.dispose();
       assistant = result.assistant;
-      log(`Ready. Press ${assistant.accelerator} to talk.`);
+      log(`Ready. Press ${assistant.accelerator} to talk${assistant.typeAccelerator ? `, ${assistant.typeAccelerator} to type` : ""}.`);
     } catch (error) {
       bindings.reportFailure("start", error);
     }
   })();
   return {
+    openTextInput() {
+      assistant?.openTextInput();
+    },
     dispose() {
       disposed = true;
       assistant?.dispose();

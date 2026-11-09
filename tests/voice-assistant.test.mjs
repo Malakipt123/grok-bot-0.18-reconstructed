@@ -2099,3 +2099,78 @@ test("always-announce senders: validated, persisted, and added to the alert quer
     await dispose();
   }
 });
+
+test("typed questions are answered as text only, never spoken, and have their own shortcut", async () => {
+  const { module, dispose } = await loadModule("desktop-controller.ts");
+  try {
+    assert.equal(module.defaultTypeShortcut("win32"), "Control+Alt+J");
+    assert.equal(module.defaultTypeShortcut("darwin"), "Alt+Shift+Space");
+    const spoken = [];
+    let opened = null;
+    let disposedInput = false;
+    const harness = desktopHarness({
+      platform: "win32",
+      textInput: { open: (ask) => { opened = ask; }, dispose: () => { disposedInput = true; } },
+      createRuntime: async () => ({
+        profile: { persona: "", capabilities: "", routines: [] },
+        runRoutine: async () => "",
+        voice: { transcribe: async () => "", synthesize: async (text) => { spoken.push(text); return wavOf(50); } },
+        assistant: {
+          handle: async (text, options) => {
+            if (text === "pára") return { text: "", source: "stop" };
+            if (text === "que horas são?") return { text: "São 10:00.", source: "local" };
+            options.onText("[sighs] Claro, ");
+            options.onText("aqui está.");
+            return { text: "[sighs] Claro, aqui está.", source: "grok" };
+          },
+        },
+      }),
+    });
+    const { assistant } = await module.startDesktopVoiceAssistant(harness.deps);
+    assert.equal(assistant.typeAccelerator, "Control+Alt+J");
+    assert.ok(harness.shortcuts.has("Control+Alt+J"));
+    harness.shortcuts.get("Control+Alt+J")();
+    assert.equal(opened, assistant.ask, "the shortcut opens the typing window");
+
+    const deltas = [];
+    assert.equal(await assistant.ask("explica", (delta) => deltas.push(delta)), "Claro, aqui está.");
+    assert.equal(deltas.join(""), "Claro, aqui está.", "audio tags never reach the screen");
+    assert.equal(await assistant.ask("que horas são?", () => {}), "São 10:00.");
+    assert.equal(await assistant.ask("pára", () => {}), null);
+    assert.equal(await assistant.ask("   ", () => {}), null);
+    await sleep(50);
+    assert.deepEqual(spoken, [], "typed replies are never spoken");
+    assert.equal(assistant.state, "idle");
+
+    assistant.dispose();
+    assert.equal(disposedInput, true);
+    assert.equal(harness.shortcuts.has("Control+Alt+J"), false);
+
+    // A taken typing shortcut does not stop Jarvis: the window is still reachable from the tray.
+    const busy = desktopHarness({ platform: "win32", textInput: { open() {}, dispose() {} } });
+    const register = busy.deps.shortcut.register;
+    busy.deps.shortcut.register = (accelerator, callback) => accelerator === "Control+Alt+J" ? false : register(accelerator, callback);
+    const started = await module.startDesktopVoiceAssistant(busy.deps);
+    assert.equal(started.status, "started");
+    assert.equal(started.assistant.typeAccelerator, null);
+    started.assistant.dispose();
+  } finally {
+    await dispose();
+  }
+});
+
+test("the typing window page has no network or Node access and signals through its title", async () => {
+  const { module, dispose } = await loadElectronModule("type-page.ts");
+  try {
+    const html = module.renderTypePage(module.typeLabels("pt-PT"));
+    assert.match(html, /Content-Security-Policy" content="default-src 'none'/);
+    assert.match(html, /<title>Escrever ao Jarvis<\/title>/);
+    assert.ok(html.includes(JSON.stringify(module.TYPE_ASK_TITLE)) && html.includes(JSON.stringify(module.TYPE_CLOSE_TITLE)));
+    // Replies are inserted as text, never as HTML.
+    assert.match(html, /current\.textContent \+= text/);
+    assert.doesNotMatch(html, /innerHTML/);
+    assert.equal(module.typeLabels("en").title, "Type to Jarvis");
+  } finally {
+    await dispose();
+  }
+});

@@ -99,9 +99,11 @@ npm run jarvis
 ```
 
 - Aparece um anel azul-claro na barra de tarefas (talvez escondido na seta
-  **^**) e uma notificação «Ready. Press Control+Alt+Space to talk.».
+  **^**) e uma notificação «Ready. Press Control+Alt+Space to talk, Control+Alt+J to type.».
 - **Ctrl+Alt+Espaço** começa a ouvir (som *Speech On*). Carrega outra vez
   para enviar (som *Speech Off*). Carregar enquanto ele fala interrompe-o.
+- **Ctrl+Alt+J** abre uma janela para escreveres ao Jarvis em vez de falar; a
+  resposta aparece por escrito, sem som.
 - No menu do ícone: **Chaves…**, **Iniciar com o sistema** (o Jarvis arranca sozinho quando
   entras no Windows), **Abrir pasta do Jarvis** (`ASSISTANT.md`, notas,
   memória, lembretes) e **Sair**.

@@ -81,6 +81,18 @@ The choice is saved in `voice.json` (0600) next to `ASSISTANT.md` and wins
 over `ELEVENLABS_VOICE_ID` on restart; "volta à voz normal" removes it. Only
 voices that really exist in the account can be chosen.
 
+## Typing instead of talking
+
+**Ctrl+Alt+J** (**⌥⇧Space** on a Mac), or **Escrever ao Jarvis…** in the
+tray menu, opens a small window to type to Jarvis, for when you cannot
+speak out loud. Replies stream into that window as text and are **not
+spoken**. Everything else works as by voice: local commands, Grok's tools,
+memory, calendar and Gmail. Enter sends, Shift+Enter starts a new line, and
+Esc hides the window; the conversation stays until Jarvis quits. Typing
+interrupts whatever Jarvis was saying. `JARVIS_TYPE_SHORTCUT` changes the
+shortcut, and `off` leaves only the tray menu. Like the HUD, the window's page
+has no Node or network access.
+
 ## Quiet hours
 
 From 22:00 to 08:00 (your time zone) Jarvis does not start talking about new
@@ -345,6 +357,7 @@ Pass `--mute` for text-only replies.
 | `JARVIS_TIMEZONE` | system time zone |
 | `JARVIS_REMINDER_MINUTES` | `10` (`off` disables event reminders) |
 | `JARVIS_EMAIL_ALERTS` | on (`off` stops spoken alerts for new important email) |
+| `JARVIS_TYPE_SHORTCUT` | `Control+Alt+J` (`Alt+Shift+Space` on macOS; `off` keeps only the tray menu) |
 | `JARVIS_QUIET_HOURS` | `22:00-08:00` (email and calendar alerts stay silent then; `off`) |
 
 ## ASSISTANT.md

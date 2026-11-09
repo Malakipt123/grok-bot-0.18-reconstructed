@@ -160,6 +160,10 @@ A janela flutuante com o anel e a onda sonora.
   Usa o atalho com uma app em ecrã inteiro ou noutro desktop (Space).
   Esperado: A HUD aparece por cima dessa app.
 
+- [ ] **Escrever ao Jarvis**
+  Carrega em Ctrl+Alt+J (⌥⇧Espaço no Mac), escreve «que dia é amanhã?» e carrega em Enter.
+  Esperado: Abre uma janela com a caixa de texto; a resposta aparece por escrito, palavra a palavra, sem som. Esc esconde a janela.
+
 ## 6. Lembretes por voz
 
 Funcionam sem Google Calendar.
@@ -287,7 +291,7 @@ Segue primeiro os passos de [JARVIS_WINDOWS.md](JARVIS_WINDOWS.md).
 
 - [ ] **Janela das chaves**
   Carrega em Guardar sem preencher nada, depois cola as duas chaves e guarda.
-  Esperado: Primeiro avisa «Falta preencher este campo.»; depois a janela fecha e aparece «Ready. Press Control+Alt+Space to talk.».
+  Esperado: Primeiro avisa «Falta preencher este campo.»; depois a janela fecha e aparece «Ready. Press Control+Alt+Space to talk, Control+Alt+J to type.».
 
 - [ ] **Mudar as chaves**
   No menu do ícone, escolhe Chaves…, deixa os campos vazios e guarda.
@@ -299,7 +303,7 @@ Segue primeiro os passos de [JARVIS_WINDOWS.md](JARVIS_WINDOWS.md).
 
 - [ ] **Arranque**
   Corre npm run jarvis num PowerShell novo.
-  Esperado: Aparece o anel na barra de tarefas e a notificação «Ready. Press Control+Alt+Space to talk.».
+  Esperado: Aparece o anel na barra de tarefas e a notificação «Ready. Press Control+Alt+Space to talk, Control+Alt+J to type.».
 
 - [ ] **Falar**
   Carrega em Ctrl+Alt+Espaço, diz «que horas são?» e carrega outra vez.
