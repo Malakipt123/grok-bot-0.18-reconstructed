@@ -86,7 +86,7 @@ voices that really exist in the account can be chosen.
 **Ctrl+Alt+J** (**⌥⇧Space** on a Mac), or **Escrever ao Jarvis…** in the
 tray menu, opens a small window to type to Jarvis, for when you cannot
 speak out loud. Replies stream into that window as text and are **not
-spoken**. Everything else works as by voice: local commands, Grok's tools,
+spoken**; press the 🔊 next to a reply to hear that one. Everything else works as by voice: local commands, Grok's tools,
 memory, calendar and Gmail. Enter sends, Shift+Enter starts a new line, and
 Esc hides the window; the conversation stays until Jarvis quits. Typing
 interrupts whatever Jarvis was saying. `JARVIS_TYPE_SHORTCUT` changes the
@@ -101,6 +101,12 @@ Reminders you set yourself ("lembra-me às 23h de…") and routines from
 `ASSISTANT.md` still speak, and Jarvis answers whenever you talk to it.
 `JARVIS_QUIET_HOURS=23:00-07:00` changes the hours, and
 `JARVIS_QUIET_HOURS=off` turns them off.
+
+**By voice:** "modo silêncio até amanhã às 9h", "não me interrompas até às
+15h" or "podes voltar a avisar" override the quiet hours for a while (12 hours
+when no time is given, at most a week). Grok uses `quiet_mode_set` and
+`quiet_mode_reset`. The override is kept in `quiet-mode.json` and survives a
+restart; when it ends, the usual hours apply again.
 
 ## Voice reminders and snooze
 

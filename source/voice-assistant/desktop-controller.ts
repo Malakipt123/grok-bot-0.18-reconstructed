@@ -31,9 +31,12 @@ export function defaultTypeShortcut(platform: NodeJS.Platform = process.platform
  */
 export type DesktopAsk = (text: string, onText: (delta: string) => void) => Promise<string | null>;
 
+/** Says a reply out loud on request (the 🔊 button), queued like any announcement. */
+export type DesktopSpeak = (text: string) => void;
+
 /** A window to type to Jarvis, for when talking out loud is not an option. */
 export interface DesktopTextInputPort {
-  open(ask: DesktopAsk): void;
+  open(ask: DesktopAsk, speak: DesktopSpeak): void;
   dispose(): void;
 }
 export const VOICE_SECRET_KEYS = ["XAI_API_KEY", "ELEVENLABS_API_KEY"] as const;
@@ -98,6 +101,8 @@ export interface DesktopVoiceAssistant {
   toggle(): Promise<void>;
   /** A typed question: answered in text only, never spoken. */
   ask: DesktopAsk;
+  /** Speaks text that was only shown, e.g. a typed reply the user wants to hear after all. */
+  speak: DesktopSpeak;
   openTextInput(): void;
   dispose(): void;
 }
@@ -406,6 +411,12 @@ export async function startDesktopVoiceAssistant(deps: DesktopVoiceDeps): Promis
     }
   };
 
+  const speak: DesktopSpeak = (text) => {
+    const clean = stripAudioTags(text);
+    if (!clean || disposed) return;
+    void announce(clean, "Jarvis", Date.now() + 5 * 60_000).catch((error: unknown) => deps.reportFailure("speak", error));
+  };
+
   let typeShortcut: string | null = null;
   const assistant: DesktopVoiceAssistant = {
     accelerator,
@@ -413,8 +424,9 @@ export async function startDesktopVoiceAssistant(deps: DesktopVoiceDeps): Promis
       return typeShortcut;
     },
     ask,
+    speak,
     openTextInput() {
-      if (!disposed) deps.textInput?.open(ask);
+      if (!disposed) deps.textInput?.open(ask, speak);
     },
     get state() {
       return state;

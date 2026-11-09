@@ -6,6 +6,7 @@
 
 export const TYPE_ASK_TITLE = "jarvis:ask";
 export const TYPE_CLOSE_TITLE = "jarvis:close";
+export const TYPE_SPEAK_TITLE = "jarvis:speak";
 export const TYPE_WIDTH = 560;
 export const TYPE_HEIGHT = 420;
 
@@ -15,11 +16,12 @@ export interface TypeLabels {
   readonly hint: string;
   readonly you: string;
   readonly thinking: string;
+  readonly listen: string;
 }
 
 export const TYPE_LABELS: Record<string, TypeLabels> = {
-  pt: { title: "Escrever ao Jarvis", placeholder: "Escreve e carrega em Enter…", hint: "Enter envia · Shift+Enter muda de linha · Esc fecha", you: "Tu", thinking: "A pensar…" },
-  en: { title: "Type to Jarvis", placeholder: "Type and press Enter…", hint: "Enter sends · Shift+Enter new line · Esc closes", you: "You", thinking: "Thinking…" },
+  pt: { title: "Escrever ao Jarvis", placeholder: "Escreve e carrega em Enter…", hint: "Enter envia · Shift+Enter muda de linha · Esc fecha", you: "Tu", thinking: "A pensar…", listen: "Ouvir esta resposta" },
+  en: { title: "Type to Jarvis", placeholder: "Type and press Enter…", hint: "Enter sends · Shift+Enter new line · Esc closes", you: "You", thinking: "Thinking…", listen: "Hear this reply" },
 };
 
 export function typeLabels(language: string): TypeLabels {
@@ -44,6 +46,8 @@ export function renderTypePage(labels: TypeLabels): string {
   .you::before { content: attr(data-who) ": "; font-weight: 600; }
   .jarvis::before { content: "Jarvis: "; font-weight: 600; color: var(--cyan); }
   .jarvis.pending { color: rgba(232, 251, 255, .55); font-style: italic; }
+  .listen { margin-left: 6px; padding: 0 4px; border: 0; background: none; cursor: pointer; font-size: 13px; opacity: .55; }
+  .listen:hover, .listen:focus-visible { opacity: 1; outline: 1px solid rgba(70, 232, 255, .5); border-radius: 4px; }
   textarea { font: inherit; resize: none; height: 3.2em; padding: 9px 11px; border-radius: 8px; border: 1px solid rgba(70, 232, 255, .35);
     background: rgba(255, 255, 255, .04); color: #fff; outline: none; }
   textarea:focus { border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(70, 232, 255, .15); }
@@ -62,6 +66,7 @@ export function renderTypePage(labels: TypeLabels): string {
   const title = document.title;
   let current = null;
   let pendingText = "";
+  let pendingSpeak = "";
   const add = (cls, text) => {
     const element = document.createElement("div");
     element.className = "msg " + cls;
@@ -102,9 +107,21 @@ export function renderTypePage(labels: TypeLabels): string {
       // Local commands answer without streaming: show the final text then.
       if (current.dataset.empty || !current.textContent.trim()) { current.textContent = text || "…"; delete current.dataset.empty; }
       current.classList.remove("pending");
+      const spoken = current.textContent;
+      if (text && spoken.trim()) {
+        const button = document.createElement("button");
+        button.className = "listen";
+        button.type = "button";
+        button.textContent = "🔊";
+        button.title = labels.listen;
+        button.setAttribute("aria-label", labels.listen);
+        button.addEventListener("click", () => { pendingSpeak = spoken; signal(${JSON.stringify(TYPE_SPEAK_TITLE)}); });
+        current.appendChild(button);
+      }
       current = null;
       input.focus();
     },
+    takeSpeak: () => { const text = pendingSpeak; pendingSpeak = ""; return text; },
     focus: () => input.focus(),
   };
 })();

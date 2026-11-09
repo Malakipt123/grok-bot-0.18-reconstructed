@@ -162,7 +162,7 @@ A janela flutuante com o anel e a onda sonora.
 
 - [ ] **Escrever ao Jarvis**
   Carrega em Ctrl+Alt+J (⌥⇧Espaço no Mac), escreve «que dia é amanhã?» e carrega em Enter.
-  Esperado: Abre uma janela com a caixa de texto; a resposta aparece por escrito, palavra a palavra, sem som. Esc esconde a janela.
+  Esperado: Abre uma janela com a caixa de texto; a resposta aparece por escrito, palavra a palavra, sem som. O 🔊 ao lado da resposta lê-a em voz alta. Esc esconde a janela.
 
 ## 6. Lembretes por voz
 
@@ -272,6 +272,10 @@ Ativa a Gmail API no mesmo projeto do Google Cloud.
 - [ ] **Lista de pessoas**
   Diz «avisa-me sempre dos emails da …» com alguém cujo email o Gmail não marca como importante, e pede-lhe que te escreva.
   Esperado: O Jarvis confirma e, em até 5 minutos, anuncia esse email. «De quem me avisas sempre?» lista as pessoas.
+
+- [ ] **Modo silêncio por voz**
+  Diz «modo silêncio até daqui a uma hora» e espera por um aviso de email ou de evento. Depois diz «podes voltar a avisar».
+  Esperado: Confirma até quando. O aviso aparece só como notificação; depois de «podes voltar a avisar» os avisos voltam a ser ditos, mesmo à noite.
 
 - [ ] **Horas de silêncio**
   Arranca com JARVIS_QUIET_HOURS definido para a hora atual (por exemplo 14:00-15:00) e espera por um aviso de email ou de evento.
