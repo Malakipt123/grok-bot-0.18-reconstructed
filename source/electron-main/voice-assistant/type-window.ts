@@ -1,5 +1,5 @@
-import type { DesktopAsk, DesktopTextInputPort } from "../../voice-assistant/desktop-controller.js";
-import { renderTypePage, TYPE_ASK_TITLE, TYPE_CLOSE_TITLE, TYPE_HEIGHT, TYPE_WIDTH, typeLabels } from "./type-page.js";
+import type { DesktopAsk, DesktopSpeak, DesktopTextInputPort } from "../../voice-assistant/desktop-controller.js";
+import { renderTypePage, TYPE_ASK_TITLE, TYPE_CLOSE_TITLE, TYPE_HEIGHT, TYPE_SPEAK_TITLE, TYPE_WIDTH, typeLabels } from "./type-page.js";
 
 interface TypeBrowserWindow {
   loadURL(url: string): Promise<unknown>;
@@ -23,7 +23,8 @@ export interface TypeElectronPorts {
 
 /**
  * A small, focusable window to type to Jarvis. Replies stream into it as text
- * and are never spoken. Esc hides it; the conversation stays until it closes.
+ * and are not spoken unless the user presses a reply's 🔊 button. Esc hides
+ * it; the conversation stays until it closes.
  */
 export class JarvisTextWindow implements DesktopTextInputPort {
   readonly #electron: TypeElectronPorts;
@@ -32,6 +33,7 @@ export class JarvisTextWindow implements DesktopTextInputPort {
   #window: TypeBrowserWindow | null = null;
   #ready: Promise<unknown> | null = null;
   #ask: DesktopAsk | null = null;
+  #speak: DesktopSpeak | null = null;
 
   constructor(electron: TypeElectronPorts, language: string) {
     this.#electron = electron;
@@ -40,8 +42,9 @@ export class JarvisTextWindow implements DesktopTextInputPort {
     this.#title = labels.title;
   }
 
-  open(ask: DesktopAsk): void {
+  open(ask: DesktopAsk, speak: DesktopSpeak): void {
     this.#ask = ask;
+    this.#speak = speak;
     const window = this.#ensureWindow();
     window.show();
     window.focus();
@@ -78,6 +81,11 @@ export class JarvisTextWindow implements DesktopTextInputPort {
     window.webContents.on("page-title-updated", (_event, title) => {
       if (title === TYPE_CLOSE_TITLE) window.hide();
       else if (title === TYPE_ASK_TITLE) void this.#answer();
+      else if (title === TYPE_SPEAK_TITLE) {
+        void this.#run("window.chat.takeSpeak()").then((text) => {
+          if (typeof text === "string" && text.trim()) this.#speak?.(text);
+        });
+      }
     });
     this.#ready = window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(this.#html)}`);
     return window;

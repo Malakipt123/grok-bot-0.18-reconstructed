@@ -2110,7 +2110,7 @@ test("typed questions are answered as text only, never spoken, and have their ow
     let disposedInput = false;
     const harness = desktopHarness({
       platform: "win32",
-      textInput: { open: (ask) => { opened = ask; }, dispose: () => { disposedInput = true; } },
+      textInput: { open: (ask, speak) => { opened = { ask, speak }; }, dispose: () => { disposedInput = true; } },
       createRuntime: async () => ({
         profile: { persona: "", capabilities: "", routines: [] },
         runRoutine: async () => "",
@@ -2130,7 +2130,8 @@ test("typed questions are answered as text only, never spoken, and have their ow
     assert.equal(assistant.typeAccelerator, "Control+Alt+J");
     assert.ok(harness.shortcuts.has("Control+Alt+J"));
     harness.shortcuts.get("Control+Alt+J")();
-    assert.equal(opened, assistant.ask, "the shortcut opens the typing window");
+    assert.equal(opened.ask, assistant.ask, "the shortcut opens the typing window");
+    assert.equal(opened.speak, assistant.speak);
 
     const deltas = [];
     assert.equal(await assistant.ask("explica", (delta) => deltas.push(delta)), "Claro, aqui está.");
@@ -2139,8 +2140,14 @@ test("typed questions are answered as text only, never spoken, and have their ow
     assert.equal(await assistant.ask("pára", () => {}), null);
     assert.equal(await assistant.ask("   ", () => {}), null);
     await sleep(50);
-    assert.deepEqual(spoken, [], "typed replies are never spoken");
+    assert.deepEqual(spoken, [], "typed replies are not spoken by themselves");
     assert.equal(assistant.state, "idle");
+
+    // The 🔊 button: the user asks to hear one reply.
+    harness.finishPlayback();
+    assistant.speak("[sighs] Claro, aqui está.");
+    await waitFor(() => spoken.length > 0 && assistant.state === "idle");
+    assert.deepEqual(spoken, ["Claro, aqui está."]);
 
     assistant.dispose();
     assert.equal(disposedInput, true);
@@ -2168,8 +2175,55 @@ test("the typing window page has no network or Node access and signals through i
     assert.ok(html.includes(JSON.stringify(module.TYPE_ASK_TITLE)) && html.includes(JSON.stringify(module.TYPE_CLOSE_TITLE)));
     // Replies are inserted as text, never as HTML.
     assert.match(html, /current\.textContent \+= text/);
+    assert.ok(html.includes(JSON.stringify(module.TYPE_SPEAK_TITLE)), "replies can be spoken on request");
+    assert.match(html, /aria-label", labels\.listen/);
     assert.doesNotMatch(html, /innerHTML/);
     assert.equal(module.typeLabels("en").title, "Type to Jarvis");
+  } finally {
+    await dispose();
+  }
+});
+
+test("silent mode by voice overrides the quiet hours for a while and survives a restart", async () => {
+  const { module, temporary, dispose } = await loadModule("quiet-mode.ts");
+  try {
+    let now = Date.parse("2026-11-09T15:00:00Z"); // 15:00 in Lisbon: outside 22:00–08:00
+    const file = path.join(temporary, "quiet-mode.json");
+    const open = () => module.QuietMode.open({ hours: { start: 22 * 60, end: 8 * 60 }, timeZone: "Europe/Lisbon", filePath: file, language: "pt", now: () => now });
+    const quiet = await open();
+    assert.equal(quiet.isQuiet(), false);
+    const toolkit = quiet.toolkit();
+    assert.match(await toolkit.prompt(), /usual quiet hours 22:00–08:00; it is off now/);
+
+    assert.match(await toolkit.run("quiet_mode_set", { quiet: true, until: "2026-11-09T18:00" }), /^Silent mode on until /);
+    assert.equal(quiet.isQuiet(), true, "silent now, even outside the quiet hours");
+    assert.equal((await stat(file)).mode & 0o777, 0o600);
+    assert.equal((await open()).isQuiet(), true, "a restart keeps it");
+    now = Date.parse("2026-11-09T18:00:01Z");
+    assert.equal(quiet.isQuiet(), false, "it ends on its own");
+
+    now = Date.parse("2026-11-09T23:00:00Z"); // inside the quiet hours
+    assert.equal(quiet.isQuiet(), true);
+    await toolkit.run("quiet_mode_set", { quiet: false });
+    assert.equal(quiet.isQuiet(), false, "\"podes voltar a avisar\" speaks even at night");
+    now += 12 * 3_600_000 + 1;
+    assert.equal(quiet.isQuiet(), false, "12 hours later the usual hours apply again (09:00 is outside them)");
+    now = Date.parse("2026-11-10T23:00:00Z");
+    assert.equal(quiet.isQuiet(), true);
+
+    await toolkit.run("quiet_mode_set", { quiet: false });
+    assert.match(await toolkit.run("quiet_mode_reset", {}), /follows the usual quiet hours/);
+    assert.equal(quiet.isQuiet(), true);
+    await assert.rejects(toolkit.run("quiet_mode_set", { quiet: true, until: "2026-11-01T08:00" }), /already passed/);
+    await toolkit.run("quiet_mode_set", { quiet: true, until: "2027-01-01T08:00" });
+    now += 7 * 24 * 3_600_000 + 1;
+    assert.equal(quiet.isQuiet(), true, "capped at a week, then the quiet hours (23:00) still apply");
+    now = Date.parse("2026-11-18T12:00:00Z");
+    assert.equal(quiet.isQuiet(), false);
+
+    const noHours = await module.QuietMode.open({ hours: null, timeZone: "UTC", filePath: path.join(temporary, "q2.json"), language: "en", now: () => now });
+    assert.equal(noHours.isQuiet(), false);
+    assert.match(noHours.describe(), /no usual quiet hours/);
   } finally {
     await dispose();
   }

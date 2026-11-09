@@ -8,7 +8,7 @@ import { ElevenLabsClient } from "./elevenlabs.js";
 import { GrokClient } from "./grok.js";
 import { createCalendarToolkit, createMeetingJoiner, GoogleCalendarClient, isMeetingUrl } from "./calendar.js";
 import { EMAIL_ALERTS_FILENAME, EmailAlerts } from "./email-alerts.js";
-import { isQuietTime } from "./quiet-hours.js";
+import { QUIET_MODE_FILENAME, QuietMode } from "./quiet-mode.js";
 import { createGmailToolkit, GmailClient } from "./gmail.js";
 import { GMAIL_READONLY_SCOPE, GOOGLE_TOKEN_FILENAME, GoogleOAuth } from "./google-auth.js";
 import { MEMORY_FILENAME, MemoryStore } from "./memory.js";
@@ -30,6 +30,8 @@ export interface VoiceAssistantRuntime {
   readonly google: GoogleOAuth | null;
   /** Reminders set by voice ("lembra-me de … às 17h") and snoozes. */
   readonly voiceReminders: VoiceReminders;
+  /** Quiet hours plus the spoken "modo silêncio" override. */
+  readonly quietMode: QuietMode;
   /** New important email and the always-announce list; null without Gmail or with JARVIS_EMAIL_ALERTS=off. */
   readonly emailAlerts: EmailAlerts | null;
   /** Voice changes by voice ("usa uma voz feminina"), saved in voice.json. */
@@ -115,8 +117,15 @@ export async function createVoiceAssistantRuntime(
     onError: (error) => options.onNotice?.(`${portuguese ? "Lembretes" : "Reminders"}: ${error instanceof Error ? error.message : String(error)}`),
   });
   // Email and calendar alerts are proactive: during quiet hours they become silent notifications.
+  // "Modo silêncio até amanhã" overrides the usual hours for a while.
+  const quietMode = await QuietMode.open({
+    hours: config.quietHours,
+    timeZone: config.timeZone,
+    language: config.language,
+    filePath: path.join(profileDirectory, QUIET_MODE_FILENAME),
+  });
   const proactive = (announcement: Announcement): Announcement =>
-    isQuietTime(config.quietHours, new Date(), config.timeZone) ? { ...announcement, quiet: true } : announcement;
+    quietMode.isQuiet() ? { ...announcement, quiet: true } : announcement;
   const emails = google && gmail && config.emailAlerts
     ? new EmailAlerts({
       search: (query) => gmail.search(query),
@@ -142,6 +151,7 @@ export async function createVoiceAssistantRuntime(
   const toolkits = [
     voiceReminders.toolkit(),
     voices.toolkit(),
+    quietMode.toolkit(),
     ...(google && calendar ? [createCalendarToolkit({ auth: google, timeZone: config.timeZone, calendar, ...(joiner ? { joiner } : {}) })] : []),
     ...(google && gmail ? [createGmailToolkit({ auth: google, gmail })] : []),
     ...(emails ? [emails.toolkit()] : []),
@@ -197,6 +207,7 @@ export async function createVoiceAssistantRuntime(
     google,
     voiceReminders,
     emailAlerts: emails,
+    quietMode,
     voices,
     startReminders(announce) {
       announceHandler = (announcement) => {
