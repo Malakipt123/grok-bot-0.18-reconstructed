@@ -1655,6 +1655,10 @@ test("reminders mention how to join, and the router sends join phrases to the me
     for (const phrase of ["Abre a reunião", "entra na reunião", "abre o Meet", "abre o google meet", "liga-me à chamada", "join the meeting", "open meet"]) {
       assert.deepEqual(router.module.routeIntent(phrase), { kind: "join-meeting" }, phrase);
     }
+    for (const phrase of ["Abre a próxima reunião.", "entra na próxima chamada", "join the next meeting", "open the next meet"]) {
+      assert.deepEqual(router.module.routeIntent(phrase), { kind: "join-meeting" }, phrase);
+    }
+    assert.deepEqual(router.module.routeIntent("qual é a próxima reunião?"), { kind: "llm" });
     assert.deepEqual(router.module.routeIntent("abre o Spotify"), { kind: "action", action: "open_app", args: { name: "Spotify" } });
   } finally {
     await reminders.dispose();
