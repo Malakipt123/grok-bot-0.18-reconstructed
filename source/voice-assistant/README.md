@@ -36,7 +36,8 @@ microphone ──sox/ffmpeg──▶ ElevenLabs Scribe (speech-to-text)
   performs them and the terminal hides them.
 - **Actions** (`actions.ts`): open an app, open an http(s) URL, set the volume,
   tell the time, append a note, and play, pause or skip music in a Spotify or
-  Music app that is already running (`playerctl` on Linux, media keys on Windows). Each action runs through `execFile` with
+  Music app that is already running (`playerctl` on Linux, media keys on Windows),
+  and say which song is playing ("que música é esta?", macOS and Linux only). Each action runs through `execFile` with
   validated arguments, never through a shell.
 - **ASSISTANT.md** (`profile.ts`, `scheduler.ts`): a profile in the spirit of
   CLAUDE.md that sets the persona, the assistant's responsibilities, and daily

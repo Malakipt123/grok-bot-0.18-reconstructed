@@ -26,6 +26,7 @@ const MEDIA: readonly (readonly [RegExp, "play" | "pause" | "next" | "previous"]
   [/^(?:próxima(?: música)?|passa à próxima|salta esta música|next(?: song| track)?|skip(?: this song)?)[.!]?$/iu, "next"],
   [/^(?:(?:música )?anterior|volta à anterior|previous(?: song| track)?)[.!]?$/iu, "previous"],
 ];
+const NOW_PLAYING = /^(?:que música é esta|que música (?:está|estás) a tocar|o que (?:está|estás) a tocar|what(?:'s| is) playing|what song is (?:this|playing))\??$/iu;
 const OPEN = /^(?:open|launch|abre|abrir|lança)\s+(?:o |a |the )?(.+?)[.!]?$/iu;
 const NOTE = /^(?:take a note|note|anota|toma nota)[:,]?\s+(.+)$/iu;
 // Only explicit "remember that …" facts are stored locally; "remind me to …" style requests need Grok.
@@ -50,6 +51,7 @@ export function routeIntent(transcript: string): RoutedIntent {
   if (STOP.test(text)) return { kind: "stop" };
   if (TIME.test(text)) return { kind: "action", action: "get_time", args: {} };
 
+  if (NOW_PLAYING.test(text)) return { kind: "action", action: "now_playing", args: {} };
   const media = MEDIA.find(([pattern]) => pattern.test(text));
   if (media) return { kind: "action", action: "media_control", args: { command: media[1] } };
   if (MUTE.test(text)) return { kind: "action", action: "set_volume", args: { level: 0 } };

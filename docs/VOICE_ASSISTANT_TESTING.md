@@ -30,7 +30,7 @@ Instala as dependências e confirma que o repositório passa os testes no Mac.
   npm ci
   npm run check
   ```
-  Esperado: Os typechecks e todos os testes passam, incluindo os 67 de voice-assistant.
+  Esperado: Os typechecks e todos os testes passam, incluindo os 68 de voice-assistant.
 
 - [ ] **Instalar o gravador de áudio**
   ```sh

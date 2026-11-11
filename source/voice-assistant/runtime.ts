@@ -1,7 +1,7 @@
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { runCommand, type CommandRunner } from "./actions.js";
+import { readCommand, runCommand, type CommandReader, type CommandRunner } from "./actions.js";
 import { stripAudioTags, VoiceAssistant } from "./assistant.js";
 import type { VoiceAssistantConfig } from "./config.js";
 import { ElevenLabsClient } from "./elevenlabs.js";
@@ -51,6 +51,7 @@ export async function createVoiceAssistantRuntime(
   options: {
     readonly platform?: NodeJS.Platform;
     readonly run?: CommandRunner;
+    readonly read?: CommandReader;
     readonly onMemoryError?: (error: unknown) => void;
     /** Short status messages for the user (e.g. "Google Calendar connected"). */
     readonly onNotice?: (message: string) => void;
@@ -198,6 +199,7 @@ export async function createVoiceAssistantRuntime(
     actions: {
       platform,
       run,
+      read: options.read ?? readCommand,
       notesPath: path.join(profileDirectory, "notes.md"),
       now: () => new Date(),
       locale: config.language,

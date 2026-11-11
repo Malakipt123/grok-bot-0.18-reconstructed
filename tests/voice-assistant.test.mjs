@@ -171,6 +171,40 @@ test("media control drives Spotify or Music with a fixed command list on every p
   }
 });
 
+test("now playing reads the current track from the running player without changing it", async () => {
+  const { module, dispose } = await loadModule("actions.ts");
+  const router = await loadModule("intent-router.ts");
+  try {
+    const reads = [];
+    const reader = output => async (file, args) => { reads.push([file, ...args]); return output; };
+    const mac = actionContext({ read: reader("Bohemian Rhapsody — Queen\n") });
+    assert.equal(await module.executeAction("now_playing", {}, mac.context), "Now playing: Bohemian Rhapsody — Queen.");
+    assert.equal(reads[0][0], "osascript");
+    assert.match(reads[0].join(" "), /application "Spotify" is running/);
+    assert.match(reads[0].join(" "), /player state is playing/);
+    assert.equal(mac.calls.length, 0, "reading never runs a player command");
+
+    assert.equal(await module.executeAction("now_playing", {}, actionContext({ read: reader("") }).context), "Nothing is playing.");
+    assert.equal(await module.executeAction("now_playing", {}, actionContext({ read: reader("x".repeat(500)) }).context).then((text) => text.length <= 220), true);
+
+    reads.length = 0;
+    await module.executeAction("now_playing", {}, actionContext({ platform: "linux", read: reader("Song — Band") }).context);
+    assert.deepEqual(reads[0], ["playerctl", "metadata", "--format", "{{title}} — {{artist}}"]);
+
+    await assert.rejects(module.executeAction("now_playing", {}, actionContext({ platform: "win32", read: reader("x") }).context));
+    await assert.rejects(module.executeAction("now_playing", {}, actionContext().context), /cannot read/i);
+    assert.ok(module.ACTION_TOOLS.some((entry) => entry.function.name === "now_playing"));
+
+    for (const phrase of ["Que música é esta?", "o que está a tocar?", "Jarvis, que música está a tocar?", "what's playing?", "what song is this?"]) {
+      assert.deepEqual(router.module.routeIntent(phrase), { kind: "action", action: "now_playing", args: {} }, phrase);
+    }
+    assert.deepEqual(router.module.routeIntent("que música é esta que a Ana pôs ontem?"), { kind: "llm" });
+  } finally {
+    await dispose();
+    await router.dispose();
+  }
+});
+
 test("profile parser reads persona, capabilities and routines", async () => {
   const { module, dispose } = await loadModule("profile.ts");
   try {
