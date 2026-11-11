@@ -19,6 +19,13 @@ const VOLUME = /^(?:set (?:the )?volume to|volume(?: a| para| to)?|põe o volume
 // "silêncio" stops Jarvis talking (STOP); "silencia" mutes the computer.
 const MUTE = /^(?:silencia|tira o som|mute|mute the (?:sound|volume))[.!]?$/iu;
 const MAX_VOLUME = /^(?:(?:põe o |mete o )?volume no máximo|max(?:imum)? volume|volume to max(?:imum)?)[.!]?$/iu;
+// Music needs "a música" for play, so a bare "continua" (keep talking) still goes to Grok.
+const MEDIA: readonly (readonly [RegExp, "play" | "pause" | "next" | "previous"])[] = [
+  [/^(?:pausa|pause)(?: a música| the music)?[.!]?$/iu, "pause"],
+  [/^(?:(?:continua|retoma) a música|(?:resume|play) (?:the )?music)[.!]?$/iu, "play"],
+  [/^(?:próxima(?: música)?|passa à próxima|salta esta música|next(?: song| track)?|skip(?: this song)?)[.!]?$/iu, "next"],
+  [/^(?:(?:música )?anterior|volta à anterior|previous(?: song| track)?)[.!]?$/iu, "previous"],
+];
 const OPEN = /^(?:open|launch|abre|abrir|lança)\s+(?:o |a |the )?(.+?)[.!]?$/iu;
 const NOTE = /^(?:take a note|note|anota|toma nota)[:,]?\s+(.+)$/iu;
 // Only explicit "remember that …" facts are stored locally; "remind me to …" style requests need Grok.
@@ -42,6 +49,8 @@ export function routeIntent(transcript: string): RoutedIntent {
   if (STOP.test(text)) return { kind: "stop" };
   if (TIME.test(text)) return { kind: "action", action: "get_time", args: {} };
 
+  const media = MEDIA.find(([pattern]) => pattern.test(text));
+  if (media) return { kind: "action", action: "media_control", args: { command: media[1] } };
   if (MUTE.test(text)) return { kind: "action", action: "set_volume", args: { level: 0 } };
   if (MAX_VOLUME.test(text)) return { kind: "action", action: "set_volume", args: { level: 100 } };
   const volume = VOLUME.exec(text);

@@ -21,7 +21,16 @@ export interface ActionContext {
   readonly locale: string;
 }
 
-export type ActionName = "open_app" | "open_url" | "set_volume" | "get_time" | "take_note";
+export type ActionName = "open_app" | "open_url" | "set_volume" | "get_time" | "take_note" | "media_control";
+
+/** The only player commands; each maps to fixed command text, never to user input. */
+const MEDIA_COMMANDS = {
+  play: { reply: "Playing.", appleScript: "play", playerctl: "play", windowsKey: 179 },
+  pause: { reply: "Paused.", appleScript: "pause", playerctl: "pause", windowsKey: 179 },
+  next: { reply: "Next track.", appleScript: "next track", playerctl: "next", windowsKey: 176 },
+  previous: { reply: "Previous track.", appleScript: "previous track", playerctl: "previous", windowsKey: 177 },
+} as const;
+type MediaCommand = keyof typeof MEDIA_COMMANDS;
 
 const APP_NAME = /^[\p{L}\p{N} ._&+'-]{1,64}$/u;
 
@@ -39,6 +48,9 @@ export const ACTION_TOOLS: readonly GrokTool[] = [
   tool("take_note", "Append a short note to the user's notes file.", {
     text: { type: "string" },
   }, ["text"]),
+  tool("media_control", "Play, pause or skip music in Spotify or Apple Music.", {
+    command: { type: "string", enum: Object.keys(MEDIA_COMMANDS) },
+  }, ["command"]),
 ];
 
 export function isActionName(value: string): value is ActionName {
@@ -83,6 +95,20 @@ export async function executeAction(name: ActionName, args: Record<string, unkno
       await mkdir(path.dirname(context.notesPath), { recursive: true });
       await appendFile(context.notesPath, `- ${context.now().toISOString()} ${text.replace(/\s+/g, " ")}\n`);
       return "Note saved.";
+    }
+    case "media_control": {
+      const name = String(args.command ?? "");
+      if (!Object.hasOwn(MEDIA_COMMANDS, name)) throw new Error(`Unknown media command: ${JSON.stringify(name)}`);
+      const command = MEDIA_COMMANDS[name as MediaCommand];
+      if (context.platform === "darwin") {
+        // Only a player that is already running is told; this never launches Spotify or Music.
+        const script = ["Spotify", "Music"].map((app) => `if application "${app}" is running then tell application "${app}" to ${command.appleScript}`).join("\n");
+        await context.run("osascript", ["-e", script]);
+      } else if (context.platform === "linux") await context.run("playerctl", [command.playerctl]);
+      // Windows has one play/pause media key, so "play" and "pause" both toggle.
+      else if (context.platform === "win32") await context.run("powershell.exe", powershellArgs(`(New-Object -ComObject WScript.Shell).SendKeys([char]${command.windowsKey})`));
+      else throw new Error("Media control is not supported on this platform");
+      return command.reply;
     }
   }
 }
