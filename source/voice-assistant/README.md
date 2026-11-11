@@ -24,7 +24,7 @@ microphone ──sox/ffmpeg──▶ ElevenLabs Scribe (speech-to-text)
 
 - **Local intent router** (`intent-router.ts`): obvious commands such as
   "abre o Spotify", "põe o volume a 40", "que horas são?", "toma nota …" or
-  "para!", "silencia" or "volume no máximo" run immediately, with no API call,
+  "para!", "silencia", "volume no máximo", "pausa" or "próxima música" run immediately, with no API call,
   even when you add "Jarvis, …" or "…, por favor". If a local guess fails, the
   request goes to Grok instead.
 - **Grok** (`grok.ts`, `assistant.ts`): questions and open-ended requests go
@@ -35,7 +35,9 @@ microphone ──sox/ffmpeg──▶ ElevenLabs Scribe (speech-to-text)
   speech. Grok may add tags such as `[laughs]` or `[sighs]`; the voice
   performs them and the terminal hides them.
 - **Actions** (`actions.ts`): open an app, open an http(s) URL, set the volume,
-  tell the time, append a note. Each action runs through `execFile` with
+  tell the time, append a note, and play, pause or skip music in a Spotify or
+  Music app that is already running (`playerctl` on Linux, media keys on Windows),
+  and say which song is playing ("que música é esta?", macOS and Linux only). Each action runs through `execFile` with
   validated arguments, never through a shell.
 - **ASSISTANT.md** (`profile.ts`, `scheduler.ts`): a profile in the spirit of
   CLAUDE.md that sets the persona, the assistant's responsibilities, and daily

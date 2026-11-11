@@ -19,13 +19,22 @@ const VOLUME = /^(?:set (?:the )?volume to|volume(?: a| para| to)?|põe o volume
 // "silêncio" stops Jarvis talking (STOP); "silencia" mutes the computer.
 const MUTE = /^(?:silencia|tira o som|mute|mute the (?:sound|volume))[.!]?$/iu;
 const MAX_VOLUME = /^(?:(?:põe o |mete o )?volume no máximo|max(?:imum)? volume|volume to max(?:imum)?)[.!]?$/iu;
+// Music needs "a música" for play, so a bare "continua" (keep talking) still goes to Grok.
+const MEDIA: readonly (readonly [RegExp, "play" | "pause" | "next" | "previous"])[] = [
+  [/^(?:pausa|pause)(?: a música| the music)?[.!]?$/iu, "pause"],
+  [/^(?:(?:continua|retoma) a música|(?:resume|play) (?:the )?music)[.!]?$/iu, "play"],
+  [/^(?:próxima(?: música)?|passa à próxima|salta esta música|next(?: song| track)?|skip(?: this song)?)[.!]?$/iu, "next"],
+  [/^(?:(?:música )?anterior|volta à anterior|previous(?: song| track)?)[.!]?$/iu, "previous"],
+];
+const NOW_PLAYING = /^(?:que música é esta|que música (?:está|estás) a tocar|o que (?:está|estás) a tocar|what(?:'s| is) playing|what song is (?:this|playing))\??$/iu;
 const OPEN = /^(?:open|launch|abre|abrir|lança)\s+(?:o |a |the )?(.+?)[.!]?$/iu;
 const NOTE = /^(?:take a note|note|anota|toma nota)[:,]?\s+(.+)$/iu;
 // Only explicit "remember that …" facts are stored locally; "remind me to …" style requests need Grok.
 const REMEMBER = /^(?:remember that|lembra-te (?:de )?que|memoriza que|não te esqueças (?:de )?que)[:,]?\s+(.{3,})$/iu;
 // One Google sign-in covers Calendar and Gmail, so any of them starts it.
 const CONNECT_CALENDAR = /^(?:(?:liga|ligar|conecta|conectar|associa)(?: o| a)?(?: meu| minha)?(?: google)? (?:calend[aá]rio(?: (?:do )?google)?|gmail|e-?mail|conta(?: (?:do )?google)?)|(?:liga|ligar|conecta|conectar|associa)(?: o)?(?: meu)? google|connect (?:my |the )?(?:google )?(?:calendar|gmail|email|account)|connect (?:my )?google)[.!]?$/iu;
-const JOIN_MEETING = /^(?:(?:abre|abrir|entra|entrar|junta-te|liga-me|vamos)(?: (?:na|à|a|o|no|para a))? (?:reuni[ãa]o|meet|google meet|chamada|videochamada)|join(?: the| my)? (?:meeting|call|meet)|open(?: the)? (?:meeting|meet|google meet))[.!]?$/iu;
+// "a próxima reunião" is the one the joiner already picks: in progress or about to start.
+const JOIN_MEETING = /^(?:(?:abre|abrir|entra|entrar|junta-te|liga-me|vamos)(?: (?:na|à|a|o|no|para a))?(?: próxima)? (?:reuni[ãa]o|meet|google meet|chamada|videochamada)|join(?: the| my)?(?: next)? (?:meeting|call|meet)|open(?: the)?(?: next)? (?:meeting|meet|google meet))[.!]?$/iu;
 // "adia", "adia 10 minutos", "lembra-me daqui a 5 minutos": repeat the last announcement later.
 // "lembra-me daqui a 20 minutos de tirar o bolo" has a subject, so it is a new reminder for Grok.
 const SNOOZE = /^(?:adia|adiar|snooze|lembra-me (?:outra vez |de novo )?daqui a|volta a lembrar(?:-me)? daqui a|remind me (?:again )?in)(?:\s+(?:mais\s+)?(\d{1,4}|um|uma|dois|duas|três|cinco|dez|quinze|vinte|trinta|one|two|three|five|ten|fifteen|twenty|thirty)\s*(?:min(?:uto)?s?|minutes?)?)?[.!]?$/iu;
@@ -42,6 +51,9 @@ export function routeIntent(transcript: string): RoutedIntent {
   if (STOP.test(text)) return { kind: "stop" };
   if (TIME.test(text)) return { kind: "action", action: "get_time", args: {} };
 
+  if (NOW_PLAYING.test(text)) return { kind: "action", action: "now_playing", args: {} };
+  const media = MEDIA.find(([pattern]) => pattern.test(text));
+  if (media) return { kind: "action", action: "media_control", args: { command: media[1] } };
   if (MUTE.test(text)) return { kind: "action", action: "set_volume", args: { level: 0 } };
   if (MAX_VOLUME.test(text)) return { kind: "action", action: "set_volume", args: { level: 100 } };
   const volume = VOLUME.exec(text);

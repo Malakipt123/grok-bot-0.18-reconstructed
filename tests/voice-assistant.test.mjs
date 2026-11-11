@@ -93,6 +93,29 @@ test("intent router mutes and maxes the volume locally", async () => {
   }
 });
 
+test("intent router sends music commands to the media player locally", async () => {
+  const { module, dispose } = await loadModule("intent-router.ts");
+  try {
+    const media = command => ({ kind: "action", action: "media_control", args: { command } });
+    assert.deepEqual(module.routeIntent("Pausa."), media("pause"));
+    assert.deepEqual(module.routeIntent("Jarvis, pausa a música"), media("pause"));
+    assert.deepEqual(module.routeIntent("pause the music"), media("pause"));
+    assert.deepEqual(module.routeIntent("Continua a música."), media("play"));
+    assert.deepEqual(module.routeIntent("retoma a música"), media("play"));
+    assert.deepEqual(module.routeIntent("resume the music"), media("play"));
+    assert.deepEqual(module.routeIntent("Próxima música, por favor."), media("next"));
+    assert.deepEqual(module.routeIntent("passa à próxima"), media("next"));
+    assert.deepEqual(module.routeIntent("next song"), media("next"));
+    assert.deepEqual(module.routeIntent("Música anterior"), media("previous"));
+    assert.deepEqual(module.routeIntent("previous track"), media("previous"));
+    assert.deepEqual(module.routeIntent("continua"), { kind: "llm" });
+    assert.deepEqual(module.routeIntent("qual é a próxima reunião?"), { kind: "llm" });
+    assert.deepEqual(module.routeIntent("Para!"), { kind: "stop" });
+  } finally {
+    await dispose();
+  }
+});
+
 test("actions run argv-only commands and reject unsafe input", async () => {
   const { module, temporary, dispose } = await loadModule("actions.ts");
   try {
@@ -114,6 +137,71 @@ test("actions run argv-only commands and reject unsafe input", async () => {
     assert.equal(await readFile(context.notesPath, "utf8"), `- ${context.now().toISOString()} comprar leite\n`);
   } finally {
     await dispose();
+  }
+});
+
+test("media control drives Spotify or Music with a fixed command list on every platform", async () => {
+  const { module, dispose } = await loadModule("actions.ts");
+  try {
+    const mac = actionContext();
+    assert.equal(await module.executeAction("media_control", { command: "pause" }, mac.context), "Paused.");
+    assert.equal(await module.executeAction("media_control", { command: "next" }, mac.context), "Next track.");
+    assert.equal(mac.calls.length, 2);
+    for (const call of mac.calls) assert.equal(call[0], "osascript");
+    assert.match(mac.calls[0].join(" "), /application "Spotify" is running.*tell application "Spotify" to pause/s);
+    assert.match(mac.calls[0].join(" "), /application "Music" is running.*tell application "Music" to pause/s);
+    assert.match(mac.calls[1].join(" "), /tell application "Spotify" to next track/);
+
+    const linux = actionContext({ platform: "linux" });
+    await module.executeAction("media_control", { command: "play" }, linux.context);
+    await module.executeAction("media_control", { command: "previous" }, linux.context);
+    assert.deepEqual(linux.calls, [["playerctl", "play"], ["playerctl", "previous"]]);
+
+    const windows = actionContext({ platform: "win32" });
+    await module.executeAction("media_control", { command: "next" }, windows.context);
+    assert.equal(windows.calls[0][0], "powershell.exe");
+    assert.equal(Buffer.from(windows.calls[0].at(-1), "base64").toString("utf16le"), "(New-Object -ComObject WScript.Shell).SendKeys([char]176)");
+
+    await assert.rejects(module.executeAction("media_control", { command: "pause\" & do shell script \"rm -rf ~" }, mac.context));
+    await assert.rejects(module.executeAction("media_control", { command: "stop" }, mac.context));
+    assert.equal(mac.calls.length, 2);
+    assert.ok(module.ACTION_TOOLS.some((entry) => entry.function.name === "media_control"));
+  } finally {
+    await dispose();
+  }
+});
+
+test("now playing reads the current track from the running player without changing it", async () => {
+  const { module, dispose } = await loadModule("actions.ts");
+  const router = await loadModule("intent-router.ts");
+  try {
+    const reads = [];
+    const reader = output => async (file, args) => { reads.push([file, ...args]); return output; };
+    const mac = actionContext({ read: reader("Bohemian Rhapsody — Queen\n") });
+    assert.equal(await module.executeAction("now_playing", {}, mac.context), "Now playing: Bohemian Rhapsody — Queen.");
+    assert.equal(reads[0][0], "osascript");
+    assert.match(reads[0].join(" "), /application "Spotify" is running/);
+    assert.match(reads[0].join(" "), /player state is playing/);
+    assert.equal(mac.calls.length, 0, "reading never runs a player command");
+
+    assert.equal(await module.executeAction("now_playing", {}, actionContext({ read: reader("") }).context), "Nothing is playing.");
+    assert.equal(await module.executeAction("now_playing", {}, actionContext({ read: reader("x".repeat(500)) }).context).then((text) => text.length <= 220), true);
+
+    reads.length = 0;
+    await module.executeAction("now_playing", {}, actionContext({ platform: "linux", read: reader("Song — Band") }).context);
+    assert.deepEqual(reads[0], ["playerctl", "metadata", "--format", "{{title}} — {{artist}}"]);
+
+    await assert.rejects(module.executeAction("now_playing", {}, actionContext({ platform: "win32", read: reader("x") }).context));
+    await assert.rejects(module.executeAction("now_playing", {}, actionContext().context), /cannot read/i);
+    assert.ok(module.ACTION_TOOLS.some((entry) => entry.function.name === "now_playing"));
+
+    for (const phrase of ["Que música é esta?", "o que está a tocar?", "Jarvis, que música está a tocar?", "what's playing?", "what song is this?"]) {
+      assert.deepEqual(router.module.routeIntent(phrase), { kind: "action", action: "now_playing", args: {} }, phrase);
+    }
+    assert.deepEqual(router.module.routeIntent("que música é esta que a Ana pôs ontem?"), { kind: "llm" });
+  } finally {
+    await dispose();
+    await router.dispose();
   }
 });
 
@@ -1601,6 +1689,10 @@ test("reminders mention how to join, and the router sends join phrases to the me
     for (const phrase of ["Abre a reunião", "entra na reunião", "abre o Meet", "abre o google meet", "liga-me à chamada", "join the meeting", "open meet"]) {
       assert.deepEqual(router.module.routeIntent(phrase), { kind: "join-meeting" }, phrase);
     }
+    for (const phrase of ["Abre a próxima reunião.", "entra na próxima chamada", "join the next meeting", "open the next meet"]) {
+      assert.deepEqual(router.module.routeIntent(phrase), { kind: "join-meeting" }, phrase);
+    }
+    assert.deepEqual(router.module.routeIntent("qual é a próxima reunião?"), { kind: "llm" });
     assert.deepEqual(router.module.routeIntent("abre o Spotify"), { kind: "action", action: "open_app", args: { name: "Spotify" } });
   } finally {
     await reminders.dispose();

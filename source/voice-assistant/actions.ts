@@ -13,15 +13,41 @@ export const runCommand: CommandRunner = (file, args) =>
     execFile(file, [...args], { timeout: 15_000, windowsHide: true }, (error) => (error ? reject(error) : resolve()));
   });
 
+/** Like CommandRunner, but returns what the program printed. */
+export type CommandReader = (file: string, args: readonly string[]) => Promise<string>;
+
+export const readCommand: CommandReader = (file, args) =>
+  new Promise((resolve, reject) => {
+    execFile(file, [...args], { timeout: 15_000, windowsHide: true, maxBuffer: 64 * 1024 }, (error, stdout) => (error ? reject(error) : resolve(String(stdout))));
+  });
+
 export interface ActionContext {
   readonly platform: NodeJS.Platform;
   readonly run: CommandRunner;
+  /** Needed only by actions that report something back, such as now_playing. */
+  readonly read?: CommandReader;
   readonly notesPath: string;
   readonly now: () => Date;
   readonly locale: string;
 }
 
-export type ActionName = "open_app" | "open_url" | "set_volume" | "get_time" | "take_note";
+export type ActionName = "open_app" | "open_url" | "set_volume" | "get_time" | "take_note" | "media_control" | "now_playing";
+
+/** The only player commands; each maps to fixed command text, never to user input. */
+const MEDIA_COMMANDS = {
+  play: { reply: "Playing.", appleScript: "play", playerctl: "play", windowsKey: 179 },
+  pause: { reply: "Paused.", appleScript: "pause", playerctl: "pause", windowsKey: 179 },
+  next: { reply: "Next track.", appleScript: "next track", playerctl: "next", windowsKey: 176 },
+  previous: { reply: "Previous track.", appleScript: "previous track", playerctl: "previous", windowsKey: 177 },
+} as const;
+type MediaCommand = keyof typeof MEDIA_COMMANDS;
+
+// Reads the track of whichever player is playing; it never starts or changes playback.
+const NOW_PLAYING_SCRIPT = ["Spotify", "Music"].map((app) => [
+  `if application "${app}" is running then`,
+  `tell application "${app}" to if player state is playing then return (name of current track) & " — " & (artist of current track)`,
+  "end if",
+].join("\n")).join("\n") + '\nreturn ""';
 
 const APP_NAME = /^[\p{L}\p{N} ._&+'-]{1,64}$/u;
 
@@ -39,6 +65,10 @@ export const ACTION_TOOLS: readonly GrokTool[] = [
   tool("take_note", "Append a short note to the user's notes file.", {
     text: { type: "string" },
   }, ["text"]),
+  tool("media_control", "Play, pause or skip music in Spotify or Apple Music.", {
+    command: { type: "string", enum: Object.keys(MEDIA_COMMANDS) },
+  }, ["command"]),
+  tool("now_playing", "Say which song is playing in Spotify or Apple Music.", {}, []),
 ];
 
 export function isActionName(value: string): value is ActionName {
@@ -83,6 +113,29 @@ export async function executeAction(name: ActionName, args: Record<string, unkno
       await mkdir(path.dirname(context.notesPath), { recursive: true });
       await appendFile(context.notesPath, `- ${context.now().toISOString()} ${text.replace(/\s+/g, " ")}\n`);
       return "Note saved.";
+    }
+    case "media_control": {
+      const name = String(args.command ?? "");
+      if (!Object.hasOwn(MEDIA_COMMANDS, name)) throw new Error(`Unknown media command: ${JSON.stringify(name)}`);
+      const command = MEDIA_COMMANDS[name as MediaCommand];
+      if (context.platform === "darwin") {
+        // Only a player that is already running is told; this never launches Spotify or Music.
+        const script = ["Spotify", "Music"].map((app) => `if application "${app}" is running then tell application "${app}" to ${command.appleScript}`).join("\n");
+        await context.run("osascript", ["-e", script]);
+      } else if (context.platform === "linux") await context.run("playerctl", [command.playerctl]);
+      // Windows has one play/pause media key, so "play" and "pause" both toggle.
+      else if (context.platform === "win32") await context.run("powershell.exe", powershellArgs(`(New-Object -ComObject WScript.Shell).SendKeys([char]${command.windowsKey})`));
+      else throw new Error("Media control is not supported on this platform");
+      return command.reply;
+    }
+    case "now_playing": {
+      if (!context.read) throw new Error("This assistant cannot read player output");
+      let output: string;
+      if (context.platform === "darwin") output = await context.read("osascript", ["-e", NOW_PLAYING_SCRIPT]);
+      else if (context.platform === "linux") output = await context.read("playerctl", ["metadata", "--format", "{{title}} — {{artist}}"]);
+      else throw new Error("Reading the current track is not supported on this platform");
+      const track = output.replace(/\s+/g, " ").trim().slice(0, 200);
+      return track ? `Now playing: ${track}.` : "Nothing is playing.";
     }
   }
 }
