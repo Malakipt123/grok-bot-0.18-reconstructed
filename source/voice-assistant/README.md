@@ -262,6 +262,38 @@ banco esta semana?". The daily brief mentions important unread email too.
   app is in Testing, Google shows an "unverified app" warning; continue as
   the test user.
 
+## Markets and paper trades
+
+Ask "quanto está a bitcoin?", "como vai a Apple hoje?" or "simula uma compra
+de Nvidia com alvo 190 e stop 180". Jarvis answers from public market data
+and, for a trade idea, runs a **time machine**: it replays the rest of the
+session 10,000 times from today's one-minute bars and says how often the
+target or the stop is hit first.
+
+- **Paper only.** There is no brokerage connection: Jarvis cannot place,
+  change or cancel orders, even if asked.
+- Tools: `market_price` and `simulate_trade` (target and stop required;
+  entry defaults to the latest price; the horizon defaults to the time left
+  in the stock session, or 4 hours for crypto).
+- **Data.** Stocks come from Yahoo Finance (`query1.finance.yahoo.com`,
+  tickers like `AAPL` or `EDP.LS`), crypto from Binance's public market-data
+  mirror (`data-api.binance.vision`, pairs like `BTCUSDT`). Neither needs an
+  account or key, and only the symbol is sent.
+- **How the replay works.** Today's bar-to-bar returns are resampled in
+  blocks of 5 bars, keeping each bar's wicks, so a target or stop can be
+  touched inside a bar. A bar touching both counts as the stop. It assumes
+  the rest of the day moves like the part already seen, so it is a picture
+  of today's volatility, not a forecast or advice.
+- **Price alerts.** "Avisa-me quando a bitcoin passar os 70 mil", "avisa-me se
+  a Apple cair abaixo de 180" or "avisa-me se a Nvidia mexer 3% numa hora".
+  Every 2 minutes while Jarvis runs it checks the prices and says "A BTC
+  passou acima de 70000 USD: está a 70120 USD." Price levels fire once and
+  are removed; moves (up or down, over the last hour) repeat at most once an
+  hour. An alert that is already true is refused rather than firing at once.
+  "Que avisos tenho?" lists them and "apaga os avisos de preço" removes them.
+  Up to 20 alerts are kept in `price-alerts.json` (0600); the spoken text is
+  built locally, without Grok.
+
 ## Desktop (Option+Space)
 
 ![Jarvis HUD: listening, thinking and speaking](../../docs/assets/jarvis-hud.png)

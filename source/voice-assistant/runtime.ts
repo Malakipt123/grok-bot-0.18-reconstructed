@@ -10,6 +10,8 @@ import { createCalendarToolkit, createMeetingJoiner, GoogleCalendarClient, isMee
 import { EMAIL_ALERTS_FILENAME, EmailAlerts } from "./email-alerts.js";
 import { heldAlertsSummary, QUIET_MODE_FILENAME, QuietMode } from "./quiet-mode.js";
 import { createGmailToolkit, GmailClient } from "./gmail.js";
+import { createMarketToolkit, MarketData } from "./markets.js";
+import { PRICE_ALERTS_FILENAME, PriceAlerts } from "./price-alerts.js";
 import { GMAIL_READONLY_SCOPE, GOOGLE_TOKEN_FILENAME, GoogleOAuth } from "./google-auth.js";
 import { MEMORY_FILENAME, MemoryStore } from "./memory.js";
 import { EventReminders } from "./reminders.js";
@@ -155,10 +157,23 @@ export async function createVoiceAssistantRuntime(
     language: config.language,
   });
   const voices = await VoiceSelector.open(voice, path.join(profileDirectory, VOICE_SETTINGS_FILENAME));
+  const marketData = new MarketData();
+  const priceAlerts = new PriceAlerts({
+    intraday: (market, symbol) => marketData.intraday(market, symbol),
+    language: config.language,
+    filePath: path.join(profileDirectory, PRICE_ALERTS_FILENAME),
+    announce: (announcement) => {
+      voiceReminders.noteAnnounced(announcement);
+      announceHandler(proactive(announcement));
+    },
+    onError: (error) => options.onNotice?.(`${portuguese ? "Avisos de preço" : "Price alerts"}: ${error instanceof Error ? error.message : String(error)}`),
+  });
   const toolkits = [
     voiceReminders.toolkit(),
     voices.toolkit(),
     quietMode.toolkit(),
+    createMarketToolkit({ data: marketData }),
+    priceAlerts.toolkit(),
     ...(google && calendar ? [createCalendarToolkit({ auth: google, timeZone: config.timeZone, calendar, ...(joiner ? { joiner } : {}) })] : []),
     ...(google && gmail ? [createGmailToolkit({ auth: google, gmail })] : []),
     ...(emails ? [emails.toolkit()] : []),
@@ -238,6 +253,7 @@ export async function createVoiceAssistantRuntime(
         : null;
       events?.start();
       void emails?.start();
+      void priceAlerts.start();
       const summary = setInterval(() => {
         if (held.length === 0 || quietMode.isQuiet()) return;
         const text = heldAlertsSummary(held, config.language);
@@ -250,6 +266,7 @@ export async function createVoiceAssistantRuntime(
           clearInterval(summary);
           events?.stop();
           emails?.stop();
+          priceAlerts.stop();
           voiceReminders.stop();
           announceHandler = () => undefined;
         },

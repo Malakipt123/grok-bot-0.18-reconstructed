@@ -2293,3 +2293,180 @@ test("silent mode: a summary of what was held, the next morning, and a menu labe
     await dispose();
   }
 });
+
+function marketBars(count, start = 100) {
+  // Deterministic zig-zag with a slight wobble: no drift, so long and short odds stay close.
+  const bars = [];
+  let price = start;
+  for (let index = 0; index < count; index += 1) {
+    price *= 1 + (index % 2 === 0 ? 0.002 : -0.002) * (1 + (index % 7) / 10);
+    bars.push({ time: 1_790_000_000_000 + index * 60_000, high: price * 1.0005, low: price * 0.9995, close: price });
+  }
+  return bars;
+}
+
+test("trade replay is repeatable, symmetric without drift, and refuses an inverted stop", async () => {
+  const { module, dispose } = await loadModule("markets.ts");
+  try {
+    const bars = marketBars(200);
+    const entry = bars.at(-1).close;
+    const long = module.replayTrade({ bars, entry, target: entry * 1.01, stop: entry * 0.99, barsLeft: 240, runs: 2000 });
+    assert.deepEqual(module.replayTrade({ bars, entry, target: entry * 1.01, stop: entry * 0.99, barsLeft: 240, runs: 2000 }), long);
+    assert.equal(long.side, "long");
+    assert.equal(long.runs, 2000);
+    // Each share is rounded to one decimal on its own, so the sum can be off by a rounding step.
+    assert.ok(Math.abs(long.hitTargetPct + long.hitStopPct + long.neitherPct - 100) <= 0.15);
+    assert.equal(long.rewardToRisk, 1);
+    assert.ok(Math.abs(long.hitTargetPct - long.hitStopPct) < 15, `expected near-even odds, got ${long.hitTargetPct}/${long.hitStopPct}`);
+
+    const short = module.replayTrade({ bars, entry, target: entry * 0.99, stop: entry * 1.01, barsLeft: 240, runs: 2000 });
+    assert.equal(short.side, "short");
+
+    // A target ten times further than the stop is reached far less often.
+    const far = module.replayTrade({ bars, entry, target: entry * 1.05, stop: entry * 0.995, barsLeft: 240, runs: 2000 });
+    assert.ok(far.hitStopPct > far.hitTargetPct);
+
+    assert.throws(() => module.replayTrade({ bars, entry: 100, target: 101, stop: 102, barsLeft: 10 }), /other side/);
+    assert.throws(() => module.replayTrade({ bars: bars.slice(0, 2), entry: 100, target: 101, stop: 99, barsLeft: 10 }), /Not enough bars/);
+  } finally {
+    await dispose();
+  }
+});
+
+test("market symbols are normalised and anything else is refused", async () => {
+  const { module, dispose } = await loadModule("markets.ts");
+  try {
+    assert.equal(module.normalizeSymbol("crypto", "bitcoin"), "BTCUSDT");
+    assert.equal(module.normalizeSymbol("crypto", "eth"), "ETHUSDT");
+    assert.equal(module.normalizeSymbol("crypto", "pepe"), "PEPEUSDT");
+    assert.equal(module.normalizeSymbol("crypto", "SOLEUR"), "SOLEUR");
+    assert.equal(module.normalizeSymbol("stock", " aapl "), "AAPL");
+    assert.equal(module.normalizeSymbol("stock", "edp.ls"), "EDP.LS");
+    assert.throws(() => module.normalizeSymbol("stock", "../etc/passwd"), /Not a stock ticker/);
+    assert.throws(() => module.normalizeSymbol("crypto", "btc&x=1"), /Not a crypto symbol/);
+  } finally {
+    await dispose();
+  }
+});
+
+test("market toolkit reads public Yahoo and Binance data and simulates to the session close", async () => {
+  const { module, dispose } = await loadModule("markets.ts");
+  try {
+    const bars = marketBars(120);
+    const now = new Date(bars.at(-1).time);
+    const requests = [];
+    const fetch = async (url) => {
+      requests.push(String(url));
+      if (String(url).includes("yahoo")) {
+        return new Response(JSON.stringify({ chart: { result: [{
+          meta: { currency: "USD", regularMarketPrice: 105, chartPreviousClose: 100, currentTradingPeriod: { regular: { end: Math.floor(now.getTime() / 1000) + 90 * 60 } } },
+          timestamp: bars.map((bar) => bar.time / 1000),
+          indicators: { quote: [{ high: bars.map((bar) => bar.high), low: bars.map((bar) => bar.low), close: [null, ...bars.slice(1).map((bar) => bar.close)] }] },
+        }], error: null } }));
+      }
+      if (String(url).includes("ticker/24hr")) return new Response(JSON.stringify({ lastPrice: "64000.5", priceChangePercent: "-2.345" }));
+      return new Response(JSON.stringify(bars.map((bar) => [bar.time, "0", String(bar.high), String(bar.low), String(bar.close), "1"])));
+    };
+    const toolkit = module.createMarketToolkit({ data: new module.MarketData({ fetch, now: () => now }) });
+    assert.deepEqual((await toolkit.tools()).map((tool) => tool.function.name), ["market_price", "simulate_trade"]);
+    assert.ok(toolkit.handles("simulate_trade"));
+    assert.ok(!toolkit.handles("place_order"));
+    assert.match(await toolkit.prompt(), /never place/);
+
+    assert.equal(await toolkit.run("market_price", { market: "crypto", symbol: "bitcoin" }), "BTCUSDT last 64000.5 USD, -2.35% vs 24 hours.");
+    assert.equal(requests.at(-1), "https://data-api.binance.vision/api/v3/ticker/24hr?symbol=BTCUSDT");
+    assert.equal(await toolkit.run("market_price", { market: "stock", symbol: "edp.ls" }), "EDP.LS last 105 USD, +5.00% vs previous close.");
+    // Unknown tools fail without touching the network.
+    const before = requests.length;
+    assert.equal(await toolkit.run("place_order", { market: "stock", symbol: "AAPL" }), "Error: unknown tool place_order");
+    assert.equal(requests.length, before);
+
+    const last = bars.at(-1).close;
+    const stock = await toolkit.run("simulate_trade", { market: "stock", symbol: "aapl", target: last * 1.005, stop: last * 0.995 });
+    assert.match(requests.at(-1), /^https:\/\/query1\.finance\.yahoo\.com\/v8\/finance\/chart\/AAPL\?interval=1m&range=1d$/);
+    // The null close is skipped, and the horizon is the 90 minutes left in the session.
+    assert.match(stock, /^Paper simulation for AAPL \(long\)/);
+    assert.match(stock, /10000 replays of the next 90 minutes from 119 one-minute bars/);
+    assert.match(stock, /target first [\d.]+%, stop first [\d.]+%, neither [\d.]+%/);
+
+    const crypto = await toolkit.run("simulate_trade", { market: "crypto", symbol: "ETH", entry: 100, target: 98, stop: 101, horizon_minutes: 30 });
+    assert.match(crypto, /^Paper simulation for ETHUSDT \(short\), entry 100 USD/);
+    assert.match(crypto, /next 30 minutes/);
+
+    await assert.rejects(toolkit.run("simulate_trade", { market: "stock", symbol: "AAPL", target: 90, stop: 80, entry: 100 }), /other side/);
+
+    // A request that never answers is abandoned instead of blocking the reply.
+    const stalled = new module.MarketData({ timeoutMs: 20, fetch: (url, init) => new Promise((resolve, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason))) });
+    // AbortSignal.timeout does not keep Node alive on its own, so hold the loop open meanwhile.
+    const keepAlive = setTimeout(() => undefined, 5_000);
+    try {
+      await assert.rejects(stalled.quote("crypto", "BTC"), /timeout|aborted/i);
+    } finally {
+      clearTimeout(keepAlive);
+    }
+  } finally {
+    await dispose();
+  }
+});
+
+test("price alerts fire once for levels, rate-limit moves, persist, and refuse alerts already true", async () => {
+  const { module, temporary, dispose } = await loadModule("price-alerts.ts");
+  try {
+    let price = 100;
+    let now = 1_790_000_000_000;
+    const minute = 60_000;
+    // Flat for an hour, then the last bar jumps to `price`.
+    const intraday = async (market, symbol) => ({
+      symbol, currency: "USD", minutesToClose: null,
+      bars: [...Array.from({ length: 60 }, (_, index) => ({ time: now - (60 - index) * minute, high: 100, low: 100, close: 100 })), { time: now, high: price, low: price, close: price }],
+    });
+    const spoken = [];
+    const filePath = path.join(temporary, "profile", "price-alerts.json");
+    const alerts = new module.PriceAlerts({ intraday, filePath, language: "pt-PT", announce: (announcement) => spoken.push(announcement), now: () => now });
+    const toolkit = alerts.toolkit();
+    assert.deepEqual((await toolkit.tools()).map((tool) => tool.function.name), ["price_alert_add", "price_alert_list", "price_alert_remove"]);
+    assert.match(await toolkit.prompt(), /No price alerts are set/);
+
+    await assert.rejects(alerts.add("crypto", "BTC", "above", 90), /already above 90 \(now 100\)/);
+    assert.equal(await toolkit.run("price_alert_add", { market: "crypto", symbol: "bitcoin", kind: "above", price: 110 }), "Alert set: [p1] crypto BTCUSDT above 110.");
+    assert.equal(await toolkit.run("price_alert_add", { market: "stock", symbol: "aapl", kind: "move", percent: 3 }), "Alert set: [p2] stock AAPL moves 3% within an hour.");
+    assert.equal(await toolkit.run("price_alert_add", { market: "stock", symbol: "AAPL", kind: "sideways" }), "Error: kind must be above, below or move");
+    assert.equal((await stat(filePath)).mode & 0o777, 0o600);
+
+    await alerts.poll();
+    assert.equal(spoken.length, 0);
+
+    price = 111;
+    await alerts.poll();
+    assert.equal(spoken.length, 1);
+    assert.equal(spoken[0].text, "A BTC passou acima de 110 USD: está a 111 USD. A AAPL subiu 11.0% na última hora: está a 111 USD.");
+    assert.equal(spoken[0].title, "Jarvis · Mercados");
+
+    // The level alert is gone; the move alert waits an hour before repeating.
+    now += 5 * minute;
+    await alerts.poll();
+    assert.equal(spoken.length, 1);
+    assert.deepEqual(alerts.alerts.map((alert) => alert.id), ["p2"]);
+    now += 61 * minute;
+    price = 95;
+    await alerts.poll();
+    assert.equal(spoken.at(-1).text, "A AAPL caiu 5.0% na última hora: está a 95 USD.");
+
+    // A restart reads the same alerts and keeps numbering.
+    const reopened = new module.PriceAlerts({ intraday, filePath, language: "en", announce: () => undefined });
+    assert.match(await reopened.toolkit().prompt(), /Active alerts: \[p2\] stock AAPL moves 3% within an hour/);
+    assert.equal((await reopened.add("crypto", "ETH", "below", 50)).id, "p3");
+    assert.equal(await reopened.toolkit().run("price_alert_remove", { id: "all" }), "Removed 2 alerts.");
+    assert.equal(await reopened.toolkit().run("price_alert_list", {}), "No price alerts.");
+
+    // A failing market API is reported once, not on every poll.
+    const errors = [];
+    const broken = new module.PriceAlerts({ intraday: async () => { throw new Error("down"); }, filePath: path.join(temporary, "broken.json"), language: "en", announce: () => undefined, onError: (error) => errors.push(error) });
+    await broken.add("stock", "AAPL", "move", undefined, 2);
+    await broken.poll();
+    await broken.poll();
+    assert.equal(errors.length, 1);
+  } finally {
+    await dispose();
+  }
+});
