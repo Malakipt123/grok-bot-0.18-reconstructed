@@ -8,6 +8,7 @@ import { ElevenLabsClient } from "./elevenlabs.js";
 import { GrokClient } from "./grok.js";
 import { createCalendarToolkit, createMeetingJoiner, GoogleCalendarClient, isMeetingUrl } from "./calendar.js";
 import { EMAIL_ALERTS_FILENAME, EmailAlerts } from "./email-alerts.js";
+import { heldAlertsSummary, QUIET_MODE_FILENAME, QuietMode } from "./quiet-mode.js";
 import { createGmailToolkit, GmailClient } from "./gmail.js";
 import { createMarketToolkit, MarketData } from "./markets.js";
 import { PRICE_ALERTS_FILENAME, PriceAlerts } from "./price-alerts.js";
@@ -31,6 +32,10 @@ export interface VoiceAssistantRuntime {
   readonly google: GoogleOAuth | null;
   /** Reminders set by voice ("lembra-me de … às 17h") and snoozes. */
   readonly voiceReminders: VoiceReminders;
+  /** Quiet hours plus the spoken "modo silêncio" override. */
+  readonly quietMode: QuietMode;
+  /** New important email and the always-announce list; null without Gmail or with JARVIS_EMAIL_ALERTS=off. */
+  readonly emailAlerts: EmailAlerts | null;
   /** Voice changes by voice ("usa uma voz feminina"), saved in voice.json. */
   readonly voices: VoiceSelector;
   /**
@@ -52,6 +57,8 @@ export async function createVoiceAssistantRuntime(
     /** Short status messages for the user (e.g. "Google Calendar connected"). */
     readonly onNotice?: (message: string) => void;
     readonly fetch?: typeof fetch;
+    /** How often to check whether silent mode ended (default one minute). */
+    readonly summaryCheckMs?: number;
   } = {},
 ): Promise<VoiceAssistantRuntime> {
   const profileDirectory = path.dirname(config.profilePath);
@@ -113,6 +120,34 @@ export async function createVoiceAssistantRuntime(
     announce: (announcement) => announceHandler(announcement),
     onError: (error) => options.onNotice?.(`${portuguese ? "Lembretes" : "Reminders"}: ${error instanceof Error ? error.message : String(error)}`),
   });
+  // Email and calendar alerts are proactive: during quiet hours they become silent notifications.
+  // "Modo silêncio até amanhã" overrides the usual hours for a while.
+  const quietMode = await QuietMode.open({
+    hours: config.quietHours,
+    timeZone: config.timeZone,
+    language: config.language,
+    filePath: path.join(profileDirectory, QUIET_MODE_FILENAME),
+  });
+  // Alerts kept silent are summed up out loud once silent mode ends.
+  let held: Announcement[] = [];
+  const proactive = (announcement: Announcement): Announcement => {
+    if (!quietMode.isQuiet()) return announcement;
+    held = [...held, announcement].slice(-50);
+    return { ...announcement, quiet: true };
+  };
+  const emails = google && gmail && config.emailAlerts
+    ? new EmailAlerts({
+      search: (query) => gmail.search(query),
+      isAllowed: () => google.hasScope(GMAIL_READONLY_SCOPE),
+      language: config.language,
+      filePath: path.join(profileDirectory, EMAIL_ALERTS_FILENAME),
+      announce: (announcement) => {
+        voiceReminders.noteAnnounced(announcement);
+        announceHandler(proactive(announcement));
+      },
+      onError: (error) => options.onNotice?.(`${portuguese ? "Avisos de email" : "Email alerts"}: ${error instanceof Error ? error.message : String(error)}`),
+    })
+    : null;
   const voice = new ElevenLabsClient({
     apiKey: config.elevenLabsApiKey,
     baseUrl: config.elevenLabsBaseUrl,
@@ -129,17 +164,19 @@ export async function createVoiceAssistantRuntime(
     filePath: path.join(profileDirectory, PRICE_ALERTS_FILENAME),
     announce: (announcement) => {
       voiceReminders.noteAnnounced(announcement);
-      announceHandler(announcement);
+      announceHandler(proactive(announcement));
     },
     onError: (error) => options.onNotice?.(`${portuguese ? "Avisos de preço" : "Price alerts"}: ${error instanceof Error ? error.message : String(error)}`),
   });
   const toolkits = [
     voiceReminders.toolkit(),
     voices.toolkit(),
+    quietMode.toolkit(),
     createMarketToolkit({ data: marketData }),
     priceAlerts.toolkit(),
     ...(google && calendar ? [createCalendarToolkit({ auth: google, timeZone: config.timeZone, calendar, ...(joiner ? { joiner } : {}) })] : []),
     ...(google && gmail ? [createGmailToolkit({ auth: google, gmail })] : []),
+    ...(emails ? [emails.toolkit()] : []),
   ];
   const connectCalendar = () => {
     if (!google) {
@@ -191,6 +228,8 @@ export async function createVoiceAssistantRuntime(
     memory,
     google,
     voiceReminders,
+    emailAlerts: emails,
+    quietMode,
     voices,
     startReminders(announce) {
       announceHandler = (announcement) => {
@@ -205,31 +244,26 @@ export async function createVoiceAssistantRuntime(
           leadMinutes: config.reminderMinutes,
           language: config.language,
           announce: (reminder) => {
-            const announcement: Announcement = { text: reminder.text, title: `Jarvis · ${reminder.event.summary}`, expiresAt: Date.parse(reminder.event.start), event: reminder.event };
+            const announcement: Announcement = { text: reminder.text, title: `Jarvis · ${reminder.event.summary}`, expiresAt: Date.parse(reminder.event.start), event: reminder.event, source: "calendar" };
             voiceReminders.noteAnnounced(announcement);
-            announceHandler(announcement);
+            announceHandler(proactive(announcement));
           },
           onError: (error) => options.onNotice?.(`${portuguese ? "Avisos do calendário" : "Calendar reminders"}: ${error instanceof Error ? error.message : String(error)}`),
         })
         : null;
       events?.start();
-      const emails = google && gmail && config.emailAlerts
-        ? new EmailAlerts({
-          search: (query) => gmail.search(query),
-          isAllowed: () => google.hasScope(GMAIL_READONLY_SCOPE),
-          language: config.language,
-          filePath: path.join(profileDirectory, EMAIL_ALERTS_FILENAME),
-          announce: (announcement) => {
-            voiceReminders.noteAnnounced(announcement);
-            announceHandler(announcement);
-          },
-          onError: (error) => options.onNotice?.(`${portuguese ? "Avisos de email" : "Email alerts"}: ${error instanceof Error ? error.message : String(error)}`),
-        })
-        : null;
       void emails?.start();
       void priceAlerts.start();
+      const summary = setInterval(() => {
+        if (held.length === 0 || quietMode.isQuiet()) return;
+        const text = heldAlertsSummary(held, config.language);
+        held = [];
+        if (text) announceHandler({ text, title: "Jarvis", expiresAt: Date.now() + 2 * 3_600_000 });
+      }, options.summaryCheckMs ?? 60_000);
+      summary.unref();
       return {
         stop: () => {
+          clearInterval(summary);
           events?.stop();
           emails?.stop();
           priceAlerts.stop();

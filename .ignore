@@ -1,0 +1,6 @@
+# Generated protobuf/RPC code (~60% of source/). Ripgrep, and the agents that use it,
+# skip it by default; search it with `rg --no-ignore` when a wire format matters.
+# Unanchored on purpose: anchored paths here are not applied when rg is given a
+# subdirectory such as `rg PATTERN source`.
+generated/
+*.gen.ts

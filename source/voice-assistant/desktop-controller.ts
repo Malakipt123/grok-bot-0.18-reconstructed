@@ -19,6 +19,37 @@ export const WINDOWS_VOICE_SHORTCUT = "Control+Alt+Space";
 export function defaultVoiceShortcut(platform: NodeJS.Platform = process.platform): string {
   return platform === "win32" ? WINDOWS_VOICE_SHORTCUT : DEFAULT_VOICE_SHORTCUT;
 }
+
+/** Opens the "type to Jarvis" box; Ctrl+Alt+T would open a terminal on Linux. */
+export function defaultTypeShortcut(platform: NodeJS.Platform = process.platform): string {
+  return platform === "darwin" ? "Alt+Shift+Space" : "Control+Alt+J";
+}
+
+/**
+ * Sends typed text to Jarvis. Deltas are the visible reply (audio tags removed);
+ * resolves with the whole reply, or null when it was a "stop" command.
+ */
+export type DesktopAsk = (text: string, onText: (delta: string) => void) => Promise<string | null>;
+
+/** Silent mode as a menu sees it: a status line and three actions. */
+export interface DesktopQuietPort {
+  label(): string;
+  /** Silent (or, with quiet false, spoken) until `until`. */
+  set(quiet: boolean, until: Date): Promise<void>;
+  /** Back to the usual quiet hours. */
+  reset(): Promise<void>;
+  /** When the usual quiet hours next end: "until tomorrow morning". */
+  nextMorning(): Date;
+}
+
+/** Says a reply out loud on request (the 🔊 button), queued like any announcement. */
+export type DesktopSpeak = (text: string) => void;
+
+/** A window to type to Jarvis, for when talking out loud is not an option. */
+export interface DesktopTextInputPort {
+  open(ask: DesktopAsk, speak: DesktopSpeak): void;
+  dispose(): void;
+}
 export const VOICE_SECRET_KEYS = ["XAI_API_KEY", "ELEVENLABS_API_KEY"] as const;
 /** Read from the app's secrets too, but not required to start. */
 export const OPTIONAL_VOICE_SECRET_KEYS = ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"] as const;
@@ -65,7 +96,9 @@ export interface DesktopVoiceDeps {
   readonly onStateChange?: (state: DesktopVoiceState) => void;
   /** When present, replies go to the HUD instead of OS notifications. */
   readonly hud?: DesktopVoiceHudPort;
-  readonly createRuntime?: (config: VoiceAssistantConfig) => Promise<Pick<VoiceAssistantRuntime, "assistant" | "voice" | "profile" | "runRoutine"> & Partial<Pick<VoiceAssistantRuntime, "startReminders">>>;
+  /** When present, JARVIS_TYPE_SHORTCUT (default Ctrl+Alt+J) opens it. */
+  readonly textInput?: DesktopTextInputPort;
+  readonly createRuntime?: (config: VoiceAssistantConfig) => Promise<Pick<VoiceAssistantRuntime, "assistant" | "voice" | "profile" | "runRoutine"> & Partial<Pick<VoiceAssistantRuntime, "startReminders" | "quietMode">>>;
   readonly startRecording?: (options: RecordingOptions) => Promise<Recording>;
   readonly player?: { play(wav: Uint8Array, onStart?: () => void): Promise<void>; stop(): void };
   readonly maxRecordingMs?: number;
@@ -73,8 +106,17 @@ export interface DesktopVoiceDeps {
 
 export interface DesktopVoiceAssistant {
   readonly accelerator: string;
+  /** The shortcut that opens the typing window, or null when there is none. */
+  readonly typeAccelerator: string | null;
   readonly state: DesktopVoiceState;
   toggle(): Promise<void>;
+  /** A typed question: answered in text only, never spoken. */
+  ask: DesktopAsk;
+  /** Silent mode, for menus; null when the runtime has none. */
+  readonly quiet: DesktopQuietPort | null;
+  /** Speaks text that was only shown, e.g. a typed reply the user wants to hear after all. */
+  speak: DesktopSpeak;
+  openTextInput(): void;
   dispose(): void;
 }
 
@@ -352,8 +394,61 @@ export async function startDesktopVoiceAssistant(deps: DesktopVoiceDeps): Promis
     }
   };
 
+  const ask: DesktopAsk = async (text, onText) => {
+    if (disposed || !text.trim()) return null;
+    const turn = ++generation;
+    interrupt();
+    if (recordingTimer) clearTimeout(recordingTimer);
+    recordingTimer = null;
+    void recording?.stop().catch(() => undefined);
+    recording = null;
+    const controller = new AbortController();
+    abort = controller;
+    setState("thinking");
+    const filter = new AudioTagFilter();
+    let shown = false;
+    const show = (visible: string) => {
+      // A reply that opens with an audio tag would otherwise start with a space.
+      const text = shown ? visible : visible.replace(/^\s+/, "");
+      if (!text || turn !== generation) return;
+      shown = true;
+      onText(text);
+    };
+    try {
+      const answer = await runtime.assistant.handle(text.trim(), { onText: (delta) => show(filter.push(delta)), signal: controller.signal });
+      show(filter.flush());
+      return answer.source === "stop" ? null : stripAudioTags(answer.text);
+    } finally {
+      if (abort === controller) abort = null;
+      if (turn === generation && state !== "idle") setState("idle");
+    }
+  };
+
+  const speak: DesktopSpeak = (text) => {
+    const clean = stripAudioTags(text);
+    if (!clean || disposed) return;
+    void announce(clean, "Jarvis", Date.now() + 5 * 60_000).catch((error: unknown) => deps.reportFailure("speak", error));
+  };
+
+  let typeShortcut: string | null = null;
   const assistant: DesktopVoiceAssistant = {
     accelerator,
+    get typeAccelerator() {
+      return typeShortcut;
+    },
+    ask,
+    speak,
+    quiet: runtime.quietMode
+      ? {
+        label: () => runtime.quietMode!.label(),
+        set: async (quiet, until) => void (await runtime.quietMode!.set(quiet, until)),
+        reset: () => runtime.quietMode!.reset(),
+        nextMorning: () => runtime.quietMode!.nextMorning(),
+      }
+      : null,
+    openTextInput() {
+      if (!disposed) deps.textInput?.open(ask, speak);
+    },
     get state() {
       return state;
     },
@@ -374,6 +469,8 @@ export async function startDesktopVoiceAssistant(deps: DesktopVoiceDeps): Promis
       reminders.stop();
       pendingAnnouncements.length = 0;
       deps.shortcut.unregister(accelerator);
+      if (typeShortcut) deps.shortcut.unregister(typeShortcut);
+      deps.textInput?.dispose();
       if (recordingTimer) clearTimeout(recordingTimer);
       void recording?.stop().catch(() => undefined);
       recording = null;
@@ -386,6 +483,12 @@ export async function startDesktopVoiceAssistant(deps: DesktopVoiceDeps): Promis
   if (!deps.shortcut.register(accelerator, () => void assistant.toggle())) {
     hud?.dispose();
     return { status: "shortcut-unavailable", detail: `${accelerator} is already used by another application. Set JARVIS_SHORTCUT to another accelerator.` };
+  }
+  // The typing shortcut is a convenience: if another app holds it, the tray menu still opens the window.
+  const typeAccelerator = env.JARVIS_TYPE_SHORTCUT?.trim() || defaultTypeShortcut(deps.platform);
+  if (deps.textInput && typeAccelerator.toLowerCase() !== "off" && typeAccelerator !== accelerator
+    && deps.shortcut.register(typeAccelerator, () => assistant.openTextInput())) {
+    typeShortcut = typeAccelerator;
   }
 
   const scheduler = new RoutineScheduler({
@@ -400,6 +503,7 @@ export async function startDesktopVoiceAssistant(deps: DesktopVoiceDeps): Promis
   scheduler.start();
 
   const reminders = runtime.startReminders?.((reminder) => {
+    if (reminder.quiet) return deps.notify(reminder.title, stripAudioTags(reminder.text));
     void announce(reminder.text, reminder.title, reminder.expiresAt).catch((error: unknown) => deps.reportFailure("reminder", error));
   }) ?? { stop() {} };
 

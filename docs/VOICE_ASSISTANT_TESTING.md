@@ -1,6 +1,6 @@
 # Testes manuais do Jarvis no Mac
 
-Checklist para validar o assistente de voz do PR #1 num Mac com Apple Silicon, Node 26.5 e chaves reais. Faz as secções pela ordem.
+Checklist para validar o assistente de voz, tal como está no `main`, num Mac com Apple Silicon, Node 26.5 e chaves reais. Faz as secções pela ordem.
 
 ## Como marcar
 
@@ -8,7 +8,7 @@ Checklist para validar o assistente de voz do PR #1 num Mac com Apple Silicon, N
 - Falha: deixa `- [ ]` e acrescenta por baixo uma linha `  - **Falha:** o que aconteceu`, com o erro do terminal se houver.
 - Saltado: deixa `- [ ]` e acrescenta `  - **Saltado:** porquê`.
 
-Quando terminares, faz commit e push deste ficheiro para o branch `ccr-ee33ddc5-umzzz4` e diz ao Claude «vê os testes».
+Quando terminares, faz commit e push deste ficheiro para o branch `testes-jarvis` (criado no passo 1) e diz ao Claude «vê os testes».
 
 Para os avisos não demorarem, arranca com `JARVIS_REMINDER_MINUTES=2` e cria um evento com Meet para daqui a 4 minutos.
 
@@ -16,19 +16,21 @@ Para os avisos não demorarem, arranca com `JARVIS_REMINDER_MINUTES=2` e cria um
 
 Instala as dependências e confirma que o repositório passa os testes no Mac.
 
-- [ ] **Obter o branch do PR**
+- [ ] **Obter o código mais recente**
   ```sh
   git fetch origin
-  git checkout ccr-ee33ddc5-umzzz4
+  git checkout main
+  git pull
+  git checkout -b testes-jarvis
   ```
-  Esperado: O branch fica ativo e `git status` diz que está atualizado com `origin/ccr-ee33ddc5-umzzz4`.
+  Esperado: Ficas no branch `testes-jarvis`, criado a partir do `main` atualizado. É nele que vais marcar os resultados.
 
 - [ ] **Instalar e correr os testes**
   ```sh
   npm ci
   npm run check
   ```
-  Esperado: Os typechecks e todos os testes passam, incluindo os 45 de voice-assistant.
+  Esperado: Os typechecks e todos os testes passam, incluindo os 59 de voice-assistant.
 
 - [ ] **Instalar o gravador de áudio**
   ```sh
@@ -158,6 +160,10 @@ A janela flutuante com o anel e a onda sonora.
   Usa o atalho com uma app em ecrã inteiro ou noutro desktop (Space).
   Esperado: A HUD aparece por cima dessa app.
 
+- [ ] **Escrever ao Jarvis**
+  Carrega em Ctrl+Alt+J (⌥⇧Espaço no Mac), escreve «que dia é amanhã?» e carrega em Enter.
+  Esperado: Abre uma janela com a caixa de texto; a resposta aparece por escrito, palavra a palavra, sem som. O 🔊 ao lado da resposta lê-a em voz alta. Esc esconde a janela.
+
 ## 6. Lembretes por voz
 
 Funcionam sem Google Calendar.
@@ -263,6 +269,22 @@ Ativa a Gmail API no mesmo projeto do Google Cloud.
   Com o Jarvis a correr, pede a alguém que te envie um email e marca-o como importante no Gmail (ou espera por um que o Gmail marque sozinho).
   Esperado: Em até 5 minutos diz «Novo email importante de …: …» só com o remetente e o assunto. Não repete o mesmo email, nem depois de reiniciar.
 
+- [ ] **Lista de pessoas**
+  Diz «avisa-me sempre dos emails da …» com alguém cujo email o Gmail não marca como importante, e pede-lhe que te escreva.
+  Esperado: O Jarvis confirma e, em até 5 minutos, anuncia esse email. «De quem me avisas sempre?» lista as pessoas.
+
+- [ ] **Modo silêncio por voz**
+  Diz «modo silêncio até daqui a uma hora» e espera por um aviso de email ou de evento. Depois diz «podes voltar a avisar».
+  Esperado: Confirma até quando. O aviso aparece só como notificação; depois de «podes voltar a avisar» os avisos voltam a ser ditos, mesmo à noite.
+
+- [ ] **Silêncio no menu e resumo**
+  No menu do ícone, escolhe Modo silêncio → Silêncio durante 1 hora e espera por um email importante. Depois escolhe Horário habitual.
+  Esperado: O menu mostra «🔕 Silêncio até …». O email só aparece como notificação; até um minuto depois de voltares ao normal, o Jarvis diz «Enquanto estiveste em silêncio chegou 1 email importante, de …».
+
+- [ ] **Horas de silêncio**
+  Arranca com JARVIS_QUIET_HOURS definido para a hora atual (por exemplo 14:00-15:00) e espera por um aviso de email ou de evento.
+  Esperado: Aparece só uma notificação, sem voz. Um lembrete que tu marcaste para essa hora continua a ser dito.
+
 - [ ] **Sem acesso ao Gmail**
   Liga outra vez a conta Google mas tira o visto do Gmail e pergunta pelos emails.
   Esperado: Diz que não tem acesso ao Gmail e que deves dizer «liga o Google». O calendário continua a funcionar.
@@ -277,7 +299,7 @@ Segue primeiro os passos de [JARVIS_WINDOWS.md](JARVIS_WINDOWS.md).
 
 - [ ] **Janela das chaves**
   Carrega em Guardar sem preencher nada, depois cola as duas chaves e guarda.
-  Esperado: Primeiro avisa «Falta preencher este campo.»; depois a janela fecha e aparece «Ready. Press Control+Alt+Space to talk.».
+  Esperado: Primeiro avisa «Falta preencher este campo.»; depois a janela fecha e aparece «Ready. Press Control+Alt+Space to talk, Control+Alt+J to type.».
 
 - [ ] **Mudar as chaves**
   No menu do ícone, escolhe Chaves…, deixa os campos vazios e guarda.
@@ -289,7 +311,7 @@ Segue primeiro os passos de [JARVIS_WINDOWS.md](JARVIS_WINDOWS.md).
 
 - [ ] **Arranque**
   Corre npm run jarvis num PowerShell novo.
-  Esperado: Aparece o anel na barra de tarefas e a notificação «Ready. Press Control+Alt+Space to talk.».
+  Esperado: Aparece o anel na barra de tarefas e a notificação «Ready. Press Control+Alt+Space to talk, Control+Alt+J to type.».
 
 - [ ] **Falar**
   Carrega em Ctrl+Alt+Espaço, diz «que horas são?» e carrega outra vez.

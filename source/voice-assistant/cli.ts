@@ -107,6 +107,7 @@ async function main(): Promise<void> {
   });
   scheduler.start();
   const reminders = runtime.startReminders((reminder) => {
+    if (reminder.quiet) return console.log(`\n(${reminder.title}) ${reminder.text}`);
     void streamReply(async (onText) => {
       onText(reminder.text);
       return reminder.text;

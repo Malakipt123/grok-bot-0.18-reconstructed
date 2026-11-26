@@ -15,7 +15,10 @@ export type RoutedIntent =
 
 const STOP = /^(stop|cancel|shut up|quiet|para|pára|cala-te|cancela|silêncio|chega)[.!]?$/iu;
 const TIME = /^(what time is it|what's the time|que horas são|diz-me as horas|que dia é hoje)\??$/iu;
-const VOLUME = /^(?:set (?:the )?volume to|volume(?: a| para| to)?|põe o volume a|mete o volume a)\s*(\d{1,3})\s*%?$/iu;
+const VOLUME = /^(?:set (?:the )?volume to|volume(?: a| para| to)?|põe o volume a|mete o volume a)\s*(\d{1,3})\s*%?[.!]?$/iu;
+// "silêncio" stops Jarvis talking (STOP); "silencia" mutes the computer.
+const MUTE = /^(?:silencia|tira o som|mute|mute the (?:sound|volume))[.!]?$/iu;
+const MAX_VOLUME = /^(?:(?:põe o |mete o )?volume no máximo|max(?:imum)? volume|volume to max(?:imum)?)[.!]?$/iu;
 const OPEN = /^(?:open|launch|abre|abrir|lança)\s+(?:o |a |the )?(.+?)[.!]?$/iu;
 const NOTE = /^(?:take a note|note|anota|toma nota)[:,]?\s+(.+)$/iu;
 // Only explicit "remember that …" facts are stored locally; "remind me to …" style requests need Grok.
@@ -28,13 +31,19 @@ const JOIN_MEETING = /^(?:(?:abre|abrir|entra|entrar|junta-te|liga-me|vamos)(?: 
 const SNOOZE = /^(?:adia|adiar|snooze|lembra-me (?:outra vez |de novo )?daqui a|volta a lembrar(?:-me)? daqui a|remind me (?:again )?in)(?:\s+(?:mais\s+)?(\d{1,4}|um|uma|dois|duas|três|cinco|dez|quinze|vinte|trinta|one|two|three|five|ten|fifteen|twenty|thirty)\s*(?:min(?:uto)?s?|minutes?)?)?[.!]?$/iu;
 const NUMBER_WORDS: Record<string, number> = { um: 1, uma: 1, one: 1, dois: 2, duas: 2, two: 2, "três": 3, three: 3, cinco: 5, five: 5, dez: 10, ten: 10, quinze: 15, fifteen: 15, vinte: 20, twenty: 20, trinta: 30, thirty: 30 };
 const URL_LIKE = /^(?:https?:\/\/)?[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:\/\S*)?$/i;
+// "Jarvis, abre o Spotify, por favor." is still "abre o Spotify". A trailing name needs a comma,
+// so "toma nota ligar ao Jarvis" keeps its last word.
+const LEADING_COURTESY = /^(?:(?:(?:ok|hey|olá|ó) )?jarvis|please|por favor)[,!.]? (?:(?:please|por favor),? )?/iu;
+const TRAILING_COURTESY = /(?:, jarvis|,? (?:por favor|please))+(?=[.!?]*$)/iu;
 
 export function routeIntent(transcript: string): RoutedIntent {
-  const text = transcript.trim().replace(/\s+/g, " ");
+  const text = transcript.trim().replace(/\s+/g, " ").replace(LEADING_COURTESY, "").replace(TRAILING_COURTESY, "");
   if (!text) return { kind: "llm" };
   if (STOP.test(text)) return { kind: "stop" };
   if (TIME.test(text)) return { kind: "action", action: "get_time", args: {} };
 
+  if (MUTE.test(text)) return { kind: "action", action: "set_volume", args: { level: 0 } };
+  if (MAX_VOLUME.test(text)) return { kind: "action", action: "set_volume", args: { level: 100 } };
   const volume = VOLUME.exec(text);
   if (volume?.[1] !== undefined) {
     const level = Number(volume[1]);

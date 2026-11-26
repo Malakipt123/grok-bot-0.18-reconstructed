@@ -24,8 +24,9 @@ microphone ──sox/ffmpeg──▶ ElevenLabs Scribe (speech-to-text)
 
 - **Local intent router** (`intent-router.ts`): obvious commands such as
   "abre o Spotify", "põe o volume a 40", "que horas são?", "toma nota …" or
-  "para!" run immediately, with no API call. If a local guess fails, the request
-  goes to Grok instead.
+  "para!", "silencia" or "volume no máximo" run immediately, with no API call,
+  even when you add "Jarvis, …" or "…, por favor". If a local guess fails, the
+  request goes to Grok instead.
 - **Grok** (`grok.ts`, `assistant.ts`): questions and open-ended requests go
   to xAI's OpenAI-compatible `/chat/completions` endpoint, with function tools
   for the same actions. The conversation history is capped and trimmed only at
@@ -80,6 +81,43 @@ choices, add voices to your account in the ElevenLabs Voice Library.
 The choice is saved in `voice.json` (0600) next to `ASSISTANT.md` and wins
 over `ELEVENLABS_VOICE_ID` on restart; "volta à voz normal" removes it. Only
 voices that really exist in the account can be chosen.
+
+## Typing instead of talking
+
+**Ctrl+Alt+J** (**⌥⇧Space** on a Mac), or **Escrever ao Jarvis…** in the
+tray menu, opens a small window to type to Jarvis, for when you cannot
+speak out loud. Replies stream into that window as text and are **not
+spoken**; press the 🔊 next to a reply to hear that one. Everything else works as by voice: local commands, Grok's tools,
+memory, calendar and Gmail. Enter sends, Shift+Enter starts a new line, and
+Esc hides the window; the conversation stays until Jarvis quits. Typing
+interrupts whatever Jarvis was saying. `JARVIS_TYPE_SHORTCUT` changes the
+shortcut, and `off` leaves only the tray menu. Like the HUD, the window's page
+has no Node or network access.
+
+## Quiet hours
+
+From 22:00 to 08:00 (your time zone) Jarvis does not start talking about new
+email or calendar events: they appear as silent notifications instead.
+Reminders you set yourself ("lembra-me às 23h de…") and routines from
+`ASSISTANT.md` still speak, and Jarvis answers whenever you talk to it.
+`JARVIS_QUIET_HOURS=23:00-07:00` changes the hours, and
+`JARVIS_QUIET_HOURS=off` turns them off.
+
+**By voice:** "modo silêncio até amanhã às 9h", "não me interrompas até às
+15h" or "podes voltar a avisar" override the quiet hours for a while (12 hours
+when no time is given, at most a week). Grok uses `quiet_mode_set` and
+`quiet_mode_reset`. The override is kept in `quiet-mode.json` and survives a
+restart; when it ends, the usual hours apply again.
+
+**From the tray** (standalone app and Windows installer): **🔕/🔔 Modo
+silêncio** shows the current state and offers *silent for 1 hour*, *silent
+until tomorrow morning*, *speak alerts until tomorrow morning* and *usual
+hours*.
+
+**When silence ends**, Jarvis sums up what it kept quiet, once: "Enquanto
+estiveste em silêncio chegaram 3 emails importantes, de Ana e Banco, e houve 1
+aviso de um evento: Reunião." The alerts themselves were already shown as
+notifications; ask "tenho emails importantes?" for the details.
 
 ## Voice reminders and snooze
 
@@ -209,6 +247,12 @@ banco esta semana?". The daily brief mentions important unread email too.
   not announced. Ids already announced are kept in `email-alerts.json`
   (0600). Gmail learns what is important to you; mark a message as
   important, or not, to teach it. `JARVIS_EMAIL_ALERTS=off` turns alerts off.
+- **Always-announce list.** "Avisa-me sempre dos emails da Ana" adds Ana to
+  a list whose unread email is announced even when Gmail does not mark it
+  important (promotions included, so a bank's statement counts). Grok uses
+  `email_vip_add`, `email_vip_list` and `email_vip_remove`; a name or an
+  address works, as Gmail's `from:` reads it. The list lives in
+  `email-alerts.json`.
 - **Already connected before Gmail support?** Your consent only covers
   Calendar. Say **"liga o Google"** (or run `/google connect`) once more and
   tick Gmail; `/google status` shows whether Gmail is allowed. Google's
@@ -362,6 +406,8 @@ Pass `--mute` for text-only replies.
 | `JARVIS_TIMEZONE` | system time zone |
 | `JARVIS_REMINDER_MINUTES` | `10` (`off` disables event reminders) |
 | `JARVIS_EMAIL_ALERTS` | on (`off` stops spoken alerts for new important email) |
+| `JARVIS_TYPE_SHORTCUT` | `Control+Alt+J` (`Alt+Shift+Space` on macOS; `off` keeps only the tray menu) |
+| `JARVIS_QUIET_HOURS` | `22:00-08:00` (email and calendar alerts stay silent then; `off`) |
 
 ## ASSISTANT.md
 

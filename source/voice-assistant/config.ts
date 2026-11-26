@@ -1,6 +1,8 @@
 import os from "node:os";
 import path from "node:path";
 
+import { parseQuietHours, type QuietHours } from "./quiet-hours.js";
+
 export interface VoiceAssistantConfig {
   readonly xaiApiKey: string;
   readonly xaiBaseUrl: string;
@@ -26,6 +28,8 @@ export interface VoiceAssistantConfig {
   readonly reminderMinutes: number | null;
   /** Speak new important Gmail (sender and subject) once Gmail is allowed. */
   readonly emailAlerts: boolean;
+  /** Email and calendar alerts are silent notifications inside these hours; null turns them off. */
+  readonly quietHours: QuietHours | null;
 }
 
 export class VoiceAssistantConfigError extends Error {
@@ -68,6 +72,7 @@ export function loadVoiceAssistantConfig(env: NodeJS.ProcessEnv = process.env): 
     // "off", 0 or anything unparsable disables reminders; a lead over two hours is clamped.
     reminderMinutes: Number.isFinite(reminderMinutes) && reminderMinutes > 0 ? Math.min(reminderMinutes, 120) : null,
     emailAlerts: env.JARVIS_EMAIL_ALERTS?.trim().toLowerCase() !== "off",
+    quietHours: parseQuietHours(env.JARVIS_QUIET_HOURS),
   };
 }
 

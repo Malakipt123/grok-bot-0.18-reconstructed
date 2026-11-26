@@ -59,6 +59,40 @@ test("intent router handles obvious commands locally and defers questions to Gro
   }
 });
 
+test("intent router ignores the wake word and politeness around a local command", async () => {
+  const { module, dispose } = await loadModule("intent-router.ts");
+  try {
+    assert.deepEqual(module.routeIntent("Abre o Spotify, por favor."), { kind: "action", action: "open_app", args: { name: "Spotify" } });
+    assert.deepEqual(module.routeIntent("Jarvis, abre o Spotify."), { kind: "action", action: "open_app", args: { name: "Spotify" } });
+    assert.deepEqual(module.routeIntent("Jarvis, que horas são?"), { kind: "action", action: "get_time", args: {} });
+    assert.deepEqual(module.routeIntent("Que horas são, Jarvis?"), { kind: "action", action: "get_time", args: {} });
+    assert.deepEqual(module.routeIntent("Põe o volume a 40, por favor."), { kind: "action", action: "set_volume", args: { level: 40 } });
+    assert.deepEqual(module.routeIntent("Ok Jarvis, para."), { kind: "stop" });
+    assert.deepEqual(module.routeIntent("Hey Jarvis, what time is it?"), { kind: "action", action: "get_time", args: {} });
+    assert.deepEqual(module.routeIntent("Please open Safari."), { kind: "action", action: "open_app", args: { name: "Safari" } });
+    assert.deepEqual(module.routeIntent("Jarvis, qual é a capital da Austrália?"), { kind: "llm" });
+    assert.deepEqual(module.routeIntent("Jarvis"), { kind: "llm" });
+  } finally {
+    await dispose();
+  }
+});
+
+test("intent router mutes and maxes the volume locally", async () => {
+  const { module, dispose } = await loadModule("intent-router.ts");
+  try {
+    const volume = level => ({ kind: "action", action: "set_volume", args: { level } });
+    assert.deepEqual(module.routeIntent("Silencia."), volume(0));
+    assert.deepEqual(module.routeIntent("tira o som"), volume(0));
+    assert.deepEqual(module.routeIntent("Mute"), volume(0));
+    assert.deepEqual(module.routeIntent("Volume no máximo."), volume(100));
+    assert.deepEqual(module.routeIntent("põe o volume no máximo"), volume(100));
+    assert.deepEqual(module.routeIntent("max volume"), volume(100));
+    assert.deepEqual(module.routeIntent("silencia as notificações do Slack"), { kind: "llm" });
+  } finally {
+    await dispose();
+  }
+});
+
 test("actions run argv-only commands and reject unsafe input", async () => {
   const { module, temporary, dispose } = await loadModule("actions.ts");
   try {
@@ -1447,6 +1481,13 @@ test("desktop announcements speak when idle, wait during a conversation, never o
     assert.deepEqual(spoken.slice(2), ["Olá a ti.", "Daqui a 5 minutos tens Gama."]);
     assert.ok(harness.events.some((event) => event[0] === "notify" && event[1] === "Já devia ter sido dito."), "an expired reminder becomes a notification");
     assert.equal(overlap, false);
+
+    // During quiet hours a proactive alert is a silent notification, never speech.
+    const before = spoken.length;
+    announceReminder({ ...reminder("q", "Novo email importante de Ana: Contrato.", 600_000), quiet: true });
+    await sleep(80);
+    assert.equal(spoken.length, before);
+    assert.ok(harness.events.some((event) => event[0] === "notify" && event[1] === "Novo email importante de Ana: Contrato."));
     assistant.dispose();
   } finally {
     await dispose();
@@ -2022,6 +2063,237 @@ test("email alerts speak only new important mail, sender and subject, once, and 
   }
 });
 
+test("quiet hours: parsing, ranges across midnight, the user's time zone", async () => {
+  const { module, dispose } = await loadModule("quiet-hours.ts");
+  try {
+    assert.deepEqual(module.parseQuietHours(undefined), { start: 22 * 60, end: 8 * 60 }, "on by default, 22:00–08:00");
+    assert.deepEqual(module.parseQuietHours("23-7"), { start: 23 * 60, end: 7 * 60 });
+    assert.deepEqual(module.parseQuietHours(" 13:30 – 15:00 "), { start: 13 * 60 + 30, end: 15 * 60 });
+    assert.equal(module.parseQuietHours("off"), null);
+    assert.equal(module.parseQuietHours("às dez"), null);
+    assert.equal(module.parseQuietHours("25:00-08:00"), null);
+    assert.equal(module.parseQuietHours("08:00-08:00"), null);
+    const night = module.parseQuietHours("22:00-08:00");
+    const lisbon = (iso) => module.isQuietTime(night, new Date(iso), "Europe/Lisbon");
+    assert.equal(lisbon("2026-11-09T21:59:00Z"), false);
+    assert.equal(lisbon("2026-11-09T22:00:00Z"), true);
+    assert.equal(lisbon("2026-11-10T03:00:00Z"), true);
+    assert.equal(lisbon("2026-11-10T08:00:00Z"), false);
+    // Summer time: 21:30 UTC is 22:30 in Lisbon.
+    assert.equal(lisbon("2026-07-01T21:30:00Z"), true);
+    assert.equal(module.isQuietTime(module.parseQuietHours("13:00-14:00"), new Date("2026-11-09T13:30:00Z"), "UTC"), true);
+    assert.equal(module.isQuietTime(null, new Date(), "UTC"), false);
+    assert.equal(module.describeQuietHours(night), "22:00–08:00");
+  } finally {
+    await dispose();
+  }
+});
+
+test("always-announce senders: validated, persisted, and added to the alert query", async () => {
+  const { module, temporary, dispose } = await loadModule("email-alerts.ts");
+  try {
+    assert.equal(module.emailAlertsQuery([]), module.EMAIL_ALERTS_QUERY);
+    assert.equal(module.emailAlertsQuery(["Ana Silva", "banco@exemplo.pt"]),
+      'is:unread newer_than:1d {from:"Ana Silva" from:banco@exemplo.pt (is:important -category:promotions -category:social)}');
+    let allowed = false;
+    const queries = [];
+    const file = path.join(temporary, "email-alerts.json");
+    const make = () => new module.EmailAlerts({
+      search: async (query) => { queries.push(query); return []; },
+      isAllowed: async () => allowed,
+      announce: () => {},
+      language: "pt",
+      filePath: file,
+      pollMs: 3_600_000,
+    });
+    const alerts = make();
+    const toolkit = alerts.toolkit();
+    assert.deepEqual(await toolkit.tools(), [], "no list tools without Gmail access");
+    allowed = true;
+    assert.deepEqual((await toolkit.tools()).map((tool) => tool.function.name), ["email_vip_add", "email_vip_list", "email_vip_remove"]);
+    assert.match(await toolkit.run("email_vip_add", { sender: " Ana  Silva " }), /^Added: Ana Silva\./);
+    await toolkit.run("email_vip_add", { sender: "<banco@exemplo.pt>" });
+    await toolkit.run("email_vip_add", { sender: "ana silva" });
+    assert.equal(await toolkit.run("email_vip_list", {}), "Ana Silva, banco@exemplo.pt", "no duplicates, case ignored");
+    await assert.rejects(toolkit.run("email_vip_add", { sender: "x OR from:*" }), /Not a sender/);
+    await assert.rejects(toolkit.run("email_vip_add", { sender: '"} is:read' }), /Not a sender/);
+    assert.equal((await stat(file)).mode & 0o777, 0o600);
+
+    // Adding someone before any poll does not count as having seen the mail already waiting.
+    assert.equal(JSON.parse(await readFile(file, "utf8")).primed, false);
+    const restarted = make();
+    await restarted.start();
+    await restarted.poll();
+    assert.equal(queries.at(-1), module.emailAlertsQuery(["Ana Silva", "banco@exemplo.pt"]));
+    assert.equal(await restarted.toolkit().run("email_vip_remove", { sender: "ANA SILVA" }), "Removed: Ana Silva.");
+    assert.equal(await restarted.toolkit().run("email_vip_remove", { sender: "Rui" }), "That sender is not on the list.");
+    assert.deepEqual(await restarted.vips(), ["banco@exemplo.pt"]);
+    restarted.stop();
+  } finally {
+    await dispose();
+  }
+});
+
+test("typed questions are answered as text only, never spoken, and have their own shortcut", async () => {
+  const { module, dispose } = await loadModule("desktop-controller.ts");
+  try {
+    assert.equal(module.defaultTypeShortcut("win32"), "Control+Alt+J");
+    assert.equal(module.defaultTypeShortcut("darwin"), "Alt+Shift+Space");
+    const spoken = [];
+    let opened = null;
+    let disposedInput = false;
+    const harness = desktopHarness({
+      platform: "win32",
+      textInput: { open: (ask, speak) => { opened = { ask, speak }; }, dispose: () => { disposedInput = true; } },
+      createRuntime: async () => ({
+        profile: { persona: "", capabilities: "", routines: [] },
+        runRoutine: async () => "",
+        voice: { transcribe: async () => "", synthesize: async (text) => { spoken.push(text); return wavOf(50); } },
+        assistant: {
+          handle: async (text, options) => {
+            if (text === "pára") return { text: "", source: "stop" };
+            if (text === "que horas são?") return { text: "São 10:00.", source: "local" };
+            options.onText("[sighs] Claro, ");
+            options.onText("aqui está.");
+            return { text: "[sighs] Claro, aqui está.", source: "grok" };
+          },
+        },
+      }),
+    });
+    const { assistant } = await module.startDesktopVoiceAssistant(harness.deps);
+    assert.equal(assistant.typeAccelerator, "Control+Alt+J");
+    assert.ok(harness.shortcuts.has("Control+Alt+J"));
+    harness.shortcuts.get("Control+Alt+J")();
+    assert.equal(opened.ask, assistant.ask, "the shortcut opens the typing window");
+    assert.equal(opened.speak, assistant.speak);
+    assert.equal(assistant.quiet, null, "no silent-mode menu without a runtime that has one");
+
+    const deltas = [];
+    assert.equal(await assistant.ask("explica", (delta) => deltas.push(delta)), "Claro, aqui está.");
+    assert.equal(deltas.join(""), "Claro, aqui está.", "audio tags never reach the screen");
+    assert.equal(await assistant.ask("que horas são?", () => {}), "São 10:00.");
+    assert.equal(await assistant.ask("pára", () => {}), null);
+    assert.equal(await assistant.ask("   ", () => {}), null);
+    await sleep(50);
+    assert.deepEqual(spoken, [], "typed replies are not spoken by themselves");
+    assert.equal(assistant.state, "idle");
+
+    // The 🔊 button: the user asks to hear one reply.
+    harness.finishPlayback();
+    assistant.speak("[sighs] Claro, aqui está.");
+    await waitFor(() => spoken.length > 0 && assistant.state === "idle");
+    assert.deepEqual(spoken, ["Claro, aqui está."]);
+
+    assistant.dispose();
+    assert.equal(disposedInput, true);
+    assert.equal(harness.shortcuts.has("Control+Alt+J"), false);
+
+    // A taken typing shortcut does not stop Jarvis: the window is still reachable from the tray.
+    const busy = desktopHarness({ platform: "win32", textInput: { open() {}, dispose() {} } });
+    const register = busy.deps.shortcut.register;
+    busy.deps.shortcut.register = (accelerator, callback) => accelerator === "Control+Alt+J" ? false : register(accelerator, callback);
+    const started = await module.startDesktopVoiceAssistant(busy.deps);
+    assert.equal(started.status, "started");
+    assert.equal(started.assistant.typeAccelerator, null);
+    started.assistant.dispose();
+  } finally {
+    await dispose();
+  }
+});
+
+test("the typing window page has no network or Node access and signals through its title", async () => {
+  const { module, dispose } = await loadElectronModule("type-page.ts");
+  try {
+    const html = module.renderTypePage(module.typeLabels("pt-PT"));
+    assert.match(html, /Content-Security-Policy" content="default-src 'none'/);
+    assert.match(html, /<title>Escrever ao Jarvis<\/title>/);
+    assert.ok(html.includes(JSON.stringify(module.TYPE_ASK_TITLE)) && html.includes(JSON.stringify(module.TYPE_CLOSE_TITLE)));
+    // Replies are inserted as text, never as HTML.
+    assert.match(html, /current\.textContent \+= text/);
+    assert.ok(html.includes(JSON.stringify(module.TYPE_SPEAK_TITLE)), "replies can be spoken on request");
+    assert.match(html, /aria-label", labels\.listen/);
+    assert.doesNotMatch(html, /innerHTML/);
+    assert.equal(module.typeLabels("en").title, "Type to Jarvis");
+  } finally {
+    await dispose();
+  }
+});
+
+test("silent mode by voice overrides the quiet hours for a while and survives a restart", async () => {
+  const { module, temporary, dispose } = await loadModule("quiet-mode.ts");
+  try {
+    let now = Date.parse("2026-11-09T15:00:00Z"); // 15:00 in Lisbon: outside 22:00–08:00
+    const file = path.join(temporary, "quiet-mode.json");
+    const open = () => module.QuietMode.open({ hours: { start: 22 * 60, end: 8 * 60 }, timeZone: "Europe/Lisbon", filePath: file, language: "pt", now: () => now });
+    const quiet = await open();
+    assert.equal(quiet.isQuiet(), false);
+    const toolkit = quiet.toolkit();
+    assert.match(await toolkit.prompt(), /usual quiet hours 22:00–08:00; it is off now/);
+
+    assert.match(await toolkit.run("quiet_mode_set", { quiet: true, until: "2026-11-09T18:00" }), /^Silent mode on until /);
+    assert.equal(quiet.isQuiet(), true, "silent now, even outside the quiet hours");
+    assert.equal((await stat(file)).mode & 0o777, 0o600);
+    assert.equal((await open()).isQuiet(), true, "a restart keeps it");
+    now = Date.parse("2026-11-09T18:00:01Z");
+    assert.equal(quiet.isQuiet(), false, "it ends on its own");
+
+    now = Date.parse("2026-11-09T23:00:00Z"); // inside the quiet hours
+    assert.equal(quiet.isQuiet(), true);
+    await toolkit.run("quiet_mode_set", { quiet: false });
+    assert.equal(quiet.isQuiet(), false, "\"podes voltar a avisar\" speaks even at night");
+    now += 12 * 3_600_000 + 1;
+    assert.equal(quiet.isQuiet(), false, "12 hours later the usual hours apply again (09:00 is outside them)");
+    now = Date.parse("2026-11-10T23:00:00Z");
+    assert.equal(quiet.isQuiet(), true);
+
+    await toolkit.run("quiet_mode_set", { quiet: false });
+    assert.match(await toolkit.run("quiet_mode_reset", {}), /follows the usual quiet hours/);
+    assert.equal(quiet.isQuiet(), true);
+    await assert.rejects(toolkit.run("quiet_mode_set", { quiet: true, until: "2026-11-01T08:00" }), /already passed/);
+    await toolkit.run("quiet_mode_set", { quiet: true, until: "2027-01-01T08:00" });
+    now += 7 * 24 * 3_600_000 + 1;
+    assert.equal(quiet.isQuiet(), true, "capped at a week, then the quiet hours (23:00) still apply");
+    now = Date.parse("2026-11-18T12:00:00Z");
+    assert.equal(quiet.isQuiet(), false);
+
+    const noHours = await module.QuietMode.open({ hours: null, timeZone: "UTC", filePath: path.join(temporary, "q2.json"), language: "en", now: () => now });
+    assert.equal(noHours.isQuiet(), false);
+    assert.match(noHours.describe(), /no usual quiet hours/);
+  } finally {
+    await dispose();
+  }
+});
+
+test("silent mode: a summary of what was held, the next morning, and a menu label", async () => {
+  const { module, temporary, dispose } = await loadModule("quiet-mode.ts");
+  try {
+    const email = (senders, count) => ({ text: "x", title: "Jarvis · Gmail", expiresAt: 0, source: "email", senders, count });
+    const event = (summary) => ({ text: "x", title: "x", expiresAt: 0, source: "calendar", event: { id: summary, summary, start: "", end: "", allDay: false, location: null } });
+    assert.equal(module.heldAlertsSummary([], "pt"), null);
+    assert.equal(module.heldAlertsSummary([email(["Ana"], 1)], "pt"), "Enquanto estiveste em silêncio chegou 1 email importante, de Ana.");
+    assert.equal(module.heldAlertsSummary([email(["Ana", "Banco"], 3), email(["Ana"], 1), event("Reunião"), event("Dentista"), event("Reunião")], "pt"),
+      "Enquanto estiveste em silêncio chegaram 4 emails importantes, de Ana, Banco, e houve 3 avisos de eventos: Reunião, Dentista.");
+    assert.equal(module.heldAlertsSummary([email(["A", "B", "C", "D", "E"], 5)], "en"), "While you were in silent mode, 5 important emails arrived, from A, B, C and 2 more.");
+
+    let now = Date.parse("2026-11-09T15:00:00Z");
+    const quiet = await module.QuietMode.open({ hours: { start: 22 * 60, end: 8 * 60 }, timeZone: "Europe/Lisbon", filePath: path.join(temporary, "q.json"), language: "pt", now: () => now });
+    assert.equal(quiet.nextMorning().toISOString(), "2026-11-10T08:00:00.000Z", "after 08:00, tomorrow");
+    now = Date.parse("2026-11-10T03:00:00Z");
+    assert.equal(quiet.nextMorning().toISOString(), "2026-11-10T08:00:00.000Z", "before 08:00, today");
+    now = Date.parse("2026-07-01T12:00:00Z");
+    assert.equal(quiet.nextMorning().toISOString(), "2026-07-02T07:00:00.000Z", "summer time: 08:00 in Lisbon is 07:00 UTC");
+
+    now = Date.parse("2026-11-09T15:00:00Z");
+    assert.equal(quiet.label(), "🔔 Avisos com voz");
+    await quiet.set(true, new Date(now + 3_600_000));
+    assert.equal(quiet.label(), "🔕 Silêncio até 16:00");
+    now = Date.parse("2026-11-09T23:00:00Z");
+    assert.equal(quiet.label(), "🔕 Silêncio (horário habitual)");
+  } finally {
+    await dispose();
+  }
+});
+
 function marketBars(count, start = 100) {
   // Deterministic zig-zag with a slight wobble: no drift, so long and short odds stay close.
   const bars = [];
@@ -2125,7 +2397,13 @@ test("market toolkit reads public Yahoo and Binance data and simulates to the se
 
     // A request that never answers is abandoned instead of blocking the reply.
     const stalled = new module.MarketData({ timeoutMs: 20, fetch: (url, init) => new Promise((resolve, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason))) });
-    await assert.rejects(stalled.quote("crypto", "BTC"), /timeout|aborted/i);
+    // AbortSignal.timeout does not keep Node alive on its own, so hold the loop open meanwhile.
+    const keepAlive = setTimeout(() => undefined, 5_000);
+    try {
+      await assert.rejects(stalled.quote("crypto", "BTC"), /timeout|aborted/i);
+    } finally {
+      clearTimeout(keepAlive);
+    }
   } finally {
     await dispose();
   }
